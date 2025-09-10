@@ -790,7 +790,7 @@ if __name__ == "__main__":
     save_dir = f"{args.output_path}/egtr__{'/'.join(args.pretrained.split('/')[-3:]).replace('/', '__')}"
     if args.from_scratch:
         save_dir += "__from_scratch"
-    name = f"batch__{args.batch_size * args.gpus * args.accumulate}__epochs__{args.max_epochs}_{args.max_epochs_finetune}__lr__{args.lr_backbone}_{args.lr}_{args.lr_initialized}"
+    name = f"batch__{args.batch_size * args.gpus * args.accumulate}__epochs__{args.max_epochs}_{args.max_epochs_finetune}__lr_bbone__{args.lr_backbone}__lr{args.lr}__lr_init{args.lr_initialized}"
     if args.memo:
         name += f"__{args.memo}"
     if args.debug:
