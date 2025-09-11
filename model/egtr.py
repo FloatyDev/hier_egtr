@@ -202,11 +202,17 @@ class BayesianRelationClassifier(nn.Module):
         super_relation = F.log_softmax(self.fc5(hc), dim=-1)  # (bsz, N, N, 3)
 
         # Compute hierarchical relationships
-        relation_1 = F.log_softmax(self.fc3_1(hc) / self.T1, dim=-1)
+        relation_1 = (
+            F.log_softmax(self.fc3_1(hc) / self.T1, dim=-1) + super_relation[..., 0].unsqueeze(-1)
+        )
 
-        relation_2 = F.log_softmax(self.fc3_2(hc) / self.T2, dim=-1)
+        relation_2 = (
+            F.log_softmax(self.fc3_2(hc) / self.T2, dim=-1) + super_relation[..., 1].unsqueeze(-1)
+        )
 
-        relation_3 = F.log_softmax(self.fc3_3(hc) / self.T3, dim=-1)
+        relation_3 = (
+            F.log_softmax(self.fc3_3(hc) / self.T3, dim=-1) + super_relation[..., 2].unsqueeze(-1)
+        )
 
         return (
             relation_1,  # (bsz, N, N, num_geometric)

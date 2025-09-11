@@ -55,11 +55,11 @@ logit_adj_tau: 0.3
 # Speed up
 num_workers: 4
 precision: 32  # choices: 16, 32
-hierarchical: false
+hierarchical: true
 num_geometric: 15
 num_possessive: 11
 num_semantic: 24
 num_negatives: 49
 super_weight: 1
-train_head: false
-artifact_path: ""
+train_head: true
+artifact_path: "artifacts/"
