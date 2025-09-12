@@ -809,7 +809,7 @@ if __name__ == "__main__":
 
     # initialize wandblogger
     wandb_logger = WandbLogger(
-        project="hier-egtr", log_model="all", save_dir="./logs", name=name
+        project="hier-egtr", log_model=False, save_dir="./logs", name=name
     )
 
     logger_list = [tensorboard_logger, wandb_logger]
