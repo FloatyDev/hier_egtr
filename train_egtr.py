@@ -1035,11 +1035,19 @@ if __name__ == "__main__":
             )
 
         # Load best model
-        ckpt_path = sorted(
-            glob(f"{tensorboard_logger.log_dir}/checkpoints/epoch=*.ckpt"),
-            key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
-        )[-1]
+        if args.load_model:
+            # Get sorted list, select latest checkpoint file
+            all_ckpts = glob(f"{args.load_model}/checkpoints/epoch=*.ckpt")
+            assert all_ckpts, f"No checkpoints found in {args.load_model}/checkpoints"
+            ckpt_path = sorted(all_ckpts, key=lambda x: int(x.split("epoch=")[1].split("-")[0]))[-1]
+        else:
+            ckpt_path = sorted(
+                glob(f"{tensorboard_logger.log_dir}/checkpoints/epoch=*.ckpt"),
+                key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
+            )[-1]
+
         state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
+
         for k in list(state_dict.keys()):
             state_dict[k[6:]] = state_dict.pop(k)  # "model."
         module.model.load_state_dict(state_dict)  # load best model
