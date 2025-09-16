@@ -639,6 +639,7 @@ def build_parser(parser):
     parser.add_argument("--super_weight", type=int, default=1)
     parser.add_argument("--train_head", type=str2bool, default=False)
     parser.add_argument("--artifact_path", type=str, default="")
+    parser.add_argument("--load_model", type=str, default="")
 
     return parser
 
