@@ -35,6 +35,7 @@ import torch.nn.functional as F
 from torch import nn
 from transformers.image_transforms import center_to_corners_format
 from transformers.utils import ModelOutput
+from model.util import get_super_rel_map, get_orig2idx
 
 from .deformable_detr import (
     DeformableDetrHungarianMatcher,
@@ -202,17 +203,23 @@ class BayesianRelationClassifier(nn.Module):
         super_relation = F.log_softmax(self.fc5(hc), dim=-1)  # (bsz, N, N, 3)
 
         # Compute hierarchical relationships
-        relation_1 = (
-            F.log_softmax(self.fc3_1(hc) / self.T1, dim=-1) + super_relation[..., 0].unsqueeze(-1)
-        )
+        relation_1 = F.log_softmax(self.fc3_1(hc) / self.T1, dim=-1) + super_relation[
+            ..., 0
+        ].unsqueeze(
+            -1
+        )  # geo
 
-        relation_2 = (
-            F.log_softmax(self.fc3_2(hc) / self.T2, dim=-1) + super_relation[..., 1].unsqueeze(-1)
-        )
+        relation_2 = F.log_softmax(self.fc3_2(hc) / self.T2, dim=-1) + super_relation[
+            ..., 1
+        ].unsqueeze(
+            -1
+        )  # poss
 
-        relation_3 = (
-            F.log_softmax(self.fc3_3(hc) / self.T3, dim=-1) + super_relation[..., 2].unsqueeze(-1)
-        )
+        relation_3 = F.log_softmax(self.fc3_3(hc) / self.T3, dim=-1) + super_relation[
+            ..., 2
+        ].unsqueeze(
+            -1
+        )  # sem
 
         return (
             relation_1,  # (bsz, N, N, num_geometric)
@@ -725,60 +732,7 @@ class SceneGraphGenerationLoss(nn.Module):
         self.focal_alpha = focal_alpha
         self.rel_sample_negatives_largest = rel_sample_negatives_largest
         self.rel_sample_nonmatching_largest = rel_sample_nonmatching_largest
-        self.super_relation_map = [
-            # 1-6: geometric
-            0,  # 1 above -> geometric
-            0,  # 2 accross -> geometric
-            0,  # 3 against -> geometric
-            0,  # 4 along -> geometric
-            0,  # 5 and -> geometric
-            0,  # 6 at -> geometric
-            2,  # 7 attached to -> semantic
-            0,  # 8 behind  -> geometric
-            1,  # 9: belonging to -> possessive
-            0,  # 10: between -> geometric
-            2,  # 11 carrying -> semantic
-            2,  # 12 covered in -> semantic
-            2,  # 13 covering -> semantic
-            2,  # 14 eating -> semantic
-            2,  # 15 flying in -> semantic
-            1,  # 16 for (misc) -> possessive (exclusion)
-            1,  # 17 from (misc) -> possessive (exclusion)
-            2,  # 18 growing on () -> semantic
-            2,  # 19 hanging from -> semantic
-            1,  # 20: has -> possessive
-            2,  # 21: holding -> semantic (light_semantic_posession treated as semantic)
-            0,  # 22 in -> geometric
-            0,  # 23 in front of -> geometric
-            2,  # 24 laying on -> semantic
-            2,  # 25 looking at -> semantic
-            2,  # 26 lying on -> semantic
-            1,  # 27 made of -> possessive
-            2,  # 28: mounted on -> semantic
-            0,  # 29: near -> geometric
-            1,  # 30: of -> possessive
-            0,  # 31 on -> geometric
-            0,  # 32 on back of -> geometric
-            0,  # 33 over -> geometric
-            # 34-35: semantic
-            2,  # 34 painted on -> semantic
-            2,  # 3 parked on -> semantic
-            1,  # 36: part of -> possessive
-            2,  # 37 playing -> semantic
-            2,  # 38 riding -> semantic
-            2,  # 39 says -> semantic
-            2,  # 40 sitting on -> semantic
-            2,  # 41 standing on -> semantic
-            1,  # 42: to -> possessive
-            0,  # 43: under -> geometric
-            2,  # 44: using -> semantic (light_semantic_posession treated as semantic)
-            2,  # 45 walking in -> semantic
-            2,  # 46 walking on -> semantic
-            2,  # 47 watching -> semantic
-            1,  # 48 wearing -> possessive
-            1,  # 49 wears -> possessive
-            1,  # 50: with -> possessive
-        ]
+        self.super_relation_map = get_super_rel_map()
         self.nonmatching_cost = (
             -torch.log(torch.tensor(1e-8)) * matcher.class_cost
             + 4 * matcher.bbox_cost
@@ -795,16 +749,7 @@ class SceneGraphGenerationLoss(nn.Module):
             self.sem_loss = nn.NLLLoss(reduction="none")
             self.super_loss = nn.NLLLoss(reduction="none")
 
-            fam_lists = {0: [], 1: [], 2: []}
-            for r, f in enumerate(self.super_relation_map):
-                fam_lists[f].append(r)
-
-            orig2famidx = torch.full(
-                (len(self.super_relation_map),), -1, dtype=torch.long
-            )
-            for f in (0, 1, 2):
-                for j, orig_id in enumerate(fam_lists[f]):
-                    orig2famidx[orig_id] = j
+            orig2famidx, num_geo, num_poss, num_sem = get_orig2idx()
 
             self.register_buffer(
                 "orig2fam",
@@ -813,9 +758,9 @@ class SceneGraphGenerationLoss(nn.Module):
             )
             self.register_buffer("orig2famidx", orig2famidx, persistent=False)
 
-            self.num_geometric = len(fam_lists[0])
-            self.num_possessive = len(fam_lists[1])
-            self.num_semantic = len(fam_lists[2])
+            self.num_geometric = num_geo
+            self.num_possessive = num_poss
+            self.num_semantic = num_sem
             self.super_weight = super_weight
 
             def class_balanced_weights(
@@ -835,13 +780,13 @@ class SceneGraphGenerationLoss(nn.Module):
                 mask_poss = fam_map == 1
                 mask_sem = fam_map == 2
 
-                w =  class_balanced_weights(rel_counts, beta=0.9999)
+                w = class_balanced_weights(rel_counts, beta=0.9999)
                 w_geo = w[mask_geo]
                 w_poss = w[mask_poss]
                 w_sem = w[mask_sem]
-                #w_geo = class_balanced_weights(rel_counts[mask_geo], beta=0.9999)
-                #w_poss = class_balanced_weights(rel_counts[mask_poss], beta=0.9999)
-                #w_sem = class_balanced_weights(rel_counts[mask_sem], beta=0.9999)
+                # w_geo = class_balanced_weights(rel_counts[mask_geo], beta=0.9999)
+                # w_poss = class_balanced_weights(rel_counts[mask_poss], beta=0.9999)
+                # w_sem = class_balanced_weights(rel_counts[mask_sem], beta=0.9999)
                 # Register as buffers so they move with .to(device) and save in checkpoints
                 self.register_buffer("w_geo", w_geo, persistent=True)
                 self.register_buffer("w_poss", w_poss, persistent=True)

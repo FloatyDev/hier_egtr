@@ -40,11 +40,29 @@ from model.deformable_detr import (
 from model.egtr import DetrForSceneGraphGeneration
 from util.box_ops import rescale_bboxes
 from util.misc import use_deterministic_algorithms
-from model.util import GTTripletVis, count_trainable
+from model.util import GTTripletVis, count_trainable, get_super_rel_map, get_orig2idx
 
 seed_everything(42, workers=True)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 torch.set_float32_matmul_precision("medium")
+
+
+def build_flat_pred_rel(geo, poss, sem, orig2fam, orig2famidx):
+    N = geo.shape[0]
+    num_rel_classes = len(orig2fam)
+    pred_rel = torch.zeros((N, N, num_rel_classes), device=geo.device)
+
+    orig2fam = torch.as_tensor(orig2fam)  # to do element-wise comparison
+
+    fam_mask_geo = orig2fam == 0
+    fam_mask_poss = orig2fam == 1
+    fam_mask_sem = orig2fam == 2
+
+    pred_rel[..., fam_mask_geo] = geo[..., orig2famidx[fam_mask_geo]]
+    pred_rel[..., fam_mask_poss] = poss[..., orig2famidx[fam_mask_poss]]
+    pred_rel[..., fam_mask_sem] = sem[..., orig2famidx[fam_mask_sem]]
+
+    return pred_rel
 
 
 # Reference: https://github.com/yuweihao/KERN/blob/master/models/eval_rels.py
@@ -58,10 +76,23 @@ def evaluate_batch(
     oi_evaluator,
     num_labels,
     max_topk=100,
-    hierarchical=False,
+    hierarchical=True,
+    orig2fam=None,
+    orig2famidx=None,
 ):
     for j, target in enumerate(targets):
         # Pred
+        if hierarchical:
+            ipdb.set_trace()
+            geo, poss, sem, super, _ = outputs["pred_rel"]
+            geo = geo[0].exp()
+            poss = poss[0].exp()
+            sem = sem[0].exp()
+            super = super[0].exp()
+            pred_rel = build_flat_pred_rel(geo, poss, sem, orig2fam, orig2famidx)
+        else:
+            pred_rel = torch.clamp(outputs["pred_rel"][j], 0.0, 1.0)
+
         pred_logits = outputs["logits"][j]
         obj_scores, pred_classes = torch.max(
             pred_logits.softmax(-1)[:, :num_labels], -1
@@ -72,7 +103,6 @@ def evaluate_batch(
         ] = 0.0  # prevent self-connection
 
         pred_boxes = outputs["pred_boxes"][j]
-        pred_rel = torch.clamp(outputs["pred_rel"][j], 0.0, 1.0)
         if "pred_connectivity" in outputs:
             pred_connectivity = torch.clamp(outputs["pred_connectivity"][j], 0.0, 1.0)
             pred_rel = torch.mul(pred_rel, pred_connectivity)
@@ -81,6 +111,7 @@ def evaluate_batch(
         orig_size = target["orig_size"]
         target_labels = target["class_labels"]  # [num_objs]
         target_boxes = target["boxes"]  # [num_objs, 4]
+
         target_rel = target["rel"].nonzero()  # [num_rels, 3(s, o, p)]
 
         gt_entry = {
@@ -461,7 +492,9 @@ class SGG(pl.LightningModule):
                 self.single_sgg_evaluator_list,
                 self.oi_evaluator,
                 self.config.num_labels,
-                hierarchical=True,
+                hierarchical=self.config.hierarchical,
+                orig2fam=get_super_rel_map(),
+                orig2famidx=get_orig2idx()[0],
             )
             # eval OD
             if self.coco_evaluator is not None:
@@ -1040,7 +1073,9 @@ if __name__ == "__main__":
             # Get sorted list, select latest checkpoint file
             all_ckpts = glob(f"{args.load_model}/checkpoints/epoch=*.ckpt")
             assert all_ckpts, f"No checkpoints found in {args.load_model}/checkpoints"
-            ckpt_path = sorted(all_ckpts, key=lambda x: int(x.split("epoch=")[1].split("-")[0]))[-1]
+            ckpt_path = sorted(
+                all_ckpts, key=lambda x: int(x.split("epoch=")[1].split("-")[0])
+            )[-1]
         else:
             ckpt_path = sorted(
                 glob(f"{tensorboard_logger.log_dir}/checkpoints/epoch=*.ckpt"),
