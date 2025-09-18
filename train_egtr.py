@@ -329,24 +329,27 @@ class SGG(pl.LightningModule):
                 _key for _key, _, _ in load_info["mismatched_keys"]
             ]
         # only train relation_head
-        if train_relation_head and not main_trained:
-            # load trained egtr weights
-            assert artifact_path, "have to give artifact_path"
-            ckpt_path = sorted(
-                glob(f"{args.artifact_path}/checkpoints/epoch=*.ckpt"),
-                key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
-            )[-1]
-            state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
-            for k in list(state_dict.keys()):
-                if k.startswith("model.rel_predictor."):
-                    print(f"----deleting {k}")
-                    del state_dict[k]
-                else:
-                    state_dict[k[6:]] = state_dict.pop(k)  # "model."
+        if train_relation_head:
+            if not main_trained:
+                # load trained egtr weights for main training
+                assert artifact_path, "have to give artifact_path"
+                ckpt_path = sorted(
+                    glob(f"{args.artifact_path}/checkpoints/epoch=*.ckpt"),
+                    key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
+                )[-1]
+                state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
+                for k in list(state_dict.keys()):
+                    if k.startswith("model.rel_predictor."):
+                        print(f"----deleting {k}")
+                        del state_dict[k]
+                    else:
+                        state_dict[k[6:]] = state_dict.pop(k)  # "model."
 
-            missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
-            print("[sgg] missing keys:", missing)
-            print("[sgg] unexpected keys:", unexpected)
+                missing, unexpected = self.model.load_state_dict(
+                    state_dict, strict=False
+                )
+                print("[sgg] missing keys:", missing)
+                print("[sgg] unexpected keys:", unexpected)
 
             # disable all parameters and enable training only the relation head
             for p in self.model.parameters():
