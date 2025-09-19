@@ -42,6 +42,7 @@ filter_multiple_rels: true
 use_freq_bias: true
 use_log_softmax: false
 use_class_context: true
+load_model: ./results/egtr__pretrained_detr__SenseTime__deformable-detr__batch__32__epochs__150_50__lr__1e-05_0.0001__visual_genome__finetune__version_0/batch__4__epochs__50_25__lr_bbone__2e-07__lr2e-06__lr_init1e-06__uniformly_balanced_superprob__hier__train_rel_head/version_0/
 
 # Evaluation
 skip_train: false
