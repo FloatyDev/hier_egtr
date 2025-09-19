@@ -83,7 +83,6 @@ def evaluate_batch(
     for j, target in enumerate(targets):
         # Pred
         if hierarchical:
-            ipdb.set_trace()
             geo, poss, sem, super, _ = outputs["pred_rel"]
             geo = geo[0].exp()
             poss = poss[0].exp()
