@@ -330,6 +330,7 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
                 num_geometric=config.num_geometric,
                 num_possessive=config.num_possessive,
                 num_semantic=config.num_semantic,
+                use_class_context=self.config.use_class_context,
             )
         else:
             self.rel_predictor = DeformableDetrMLPPredictionHead(
@@ -566,8 +567,8 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
                 eos_coef=self.config.eos_coefficient,
                 losses=losses,
                 smoothing=self.config.smoothing,
-                rel_sample_negatives=self.rel_sample_negatives,
-                rel_sample_nonmatching=self.rel_sample_nonmatching,
+                rel_sample_negatives=self.config.rel_sample_negatives,
+                rel_sample_nonmatching=self.config.rel_sample_nonmatching,
                 model_training=self.training,
                 focal_alpha=self.config.focal_alpha,
                 rel_sample_negatives_largest=self.config.rel_sample_negatives_largest,

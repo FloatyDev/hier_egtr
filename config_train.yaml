@@ -41,6 +41,7 @@ filter_duplicate_rels: true
 filter_multiple_rels: true
 use_freq_bias: true
 use_log_softmax: false
+use_class_context: true
 
 # Evaluation
 skip_train: false
