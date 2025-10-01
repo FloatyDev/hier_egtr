@@ -1093,11 +1093,14 @@ if __name__ == "__main__":
                 key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
             )[-1]
 
+        print(f"Loading model for evaluation {ckpt_path}")
         state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
 
         for k in list(state_dict.keys()):
             state_dict[k[6:]] = state_dict.pop(k)  # "model."
         module.model.load_state_dict(state_dict)  # load best model
+        print("Turning model to eval mode")
+        module.model.eval()
 
         # Eval
         trainer = Trainer(
