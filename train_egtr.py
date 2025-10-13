@@ -93,13 +93,15 @@ def evaluate_batch(
         # Pred
         if hierarchical:
             geo, poss, sem, super, _ = outputs["pred_rel"]
-            geo = geo[0].exp()
-            poss = poss[0].exp()
-            sem = sem[0].exp()
-            super = super[0].exp()
+            geo = geo[j].exp()
+            poss = poss[j].exp()
+            sem = sem[j].exp()
+            super = super[j].exp()
             pred_rel = build_flat_pred_rel(geo, poss, sem, orig2fam, orig2famidx)
         else:
-            pred_rel = torch.clamp(outputs["pred_rel"][j], 0.0, 1.0)
+            pred_rel = outputs["pred_rel"][j]
+
+        pred_rel = torch.clamp(pred_rel, 0.0, 1.0)
 
         pred_logits = outputs["logits"][j]
         obj_scores, pred_classes = torch.max(
