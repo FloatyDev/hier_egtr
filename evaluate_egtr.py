@@ -6,6 +6,7 @@ import argparse
 import json
 from glob import glob
 
+import ipdb
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -20,6 +21,7 @@ from lib.evaluation.sg_eval import (
 )
 from model.deformable_detr import DeformableDetrConfig, DeformableDetrFeatureExtractor
 from model.egtr import DetrForSceneGraphGeneration
+from model.util import get_orig2idx, get_super_rel_map
 from train_egtr import collate_fn, evaluate_batch
 from model.util import get_orig2idx, get_super_rel_map
 
@@ -48,7 +50,9 @@ def evaluate(
     oi_evaluator=None,
     coco_evaluator=None,
     feature_extractor=None,
-    hierarchical= False
+    hierarchical=False,
+    orig2fam=None,
+    orig2famidx=None,
 ):
     metric_dict = {}
     model.eval()
@@ -284,12 +288,12 @@ if __name__ == "__main__":
             model,
             test_dataloader,
             max(id2label.keys()) + 1,
-            multiple_sgg_evaluator = multiple_sgg_evaluator,
-            single_sgg_evaluator= single_sgg_evaluator,
-            oi_evaluator= oi_evaluator,
-            coco_evaluator=coco_evaluator,
-            feature_extractor=feature_extractor,
-            hierarchical= args.hier
+            multiple_sgg_evaluator,
+            single_sgg_evaluator,
+            oi_evaluator,
+            coco_evaluator,
+            feature_extractor,
+            config.hierarchical,
         )
 
         # Save eval metric

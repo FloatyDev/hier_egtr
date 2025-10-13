@@ -744,11 +744,6 @@ class SceneGraphGenerationLoss(nn.Module):
         self.hierarchical = hierarchical
 
         if hierarchical:
-            # Use NLLLoss for each relationship category
-            self.geo_loss = nn.NLLLoss(reduction="none")
-            self.poss_loss = nn.NLLLoss(reduction="none")
-            self.sem_loss = nn.NLLLoss(reduction="none")
-            self.super_loss = nn.NLLLoss(reduction="none")
 
             orig2famidx, num_geo, num_poss, num_sem = get_orig2idx()
 
@@ -785,9 +780,6 @@ class SceneGraphGenerationLoss(nn.Module):
                 w_geo = w[mask_geo]
                 w_poss = w[mask_poss]
                 w_sem = w[mask_sem]
-                # w_geo = class_balanced_weights(rel_counts[mask_geo], beta=0.9999)
-                # w_poss = class_balanced_weights(rel_counts[mask_poss], beta=0.9999)
-                # w_sem = class_balanced_weights(rel_counts[mask_sem], beta=0.9999)
 
                 # Register as buffers so they move with .to(device) and save in checkpoints
                 self.register_buffer("w_geo", w_geo, persistent=True)
