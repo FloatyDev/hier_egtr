@@ -76,7 +76,7 @@ def evaluate_batch(
     oi_evaluator,
     num_labels,
     max_topk=100,
-    hierarchical=True,
+    hierarchical=False,
     orig2fam=None,
     orig2famidx=None,
 ):
@@ -88,9 +88,11 @@ def evaluate_batch(
             poss = poss[0].exp()
             sem = sem[0].exp()
             super = super[0].exp()
-            pred_rel = build_flat_pred_rel(geo, poss, sem, orig2fam, orig2famidx)
+            pred_rel = build_flat_pred_rel(geo, poss, sem, orig2fam, orig2famidx)[j]
         else:
-            pred_rel = torch.clamp(outputs["pred_rel"][j], 0.0, 1.0)
+            pred_rel = outputs["pred_rel"][j]
+
+        pred_rel = torch.clamp(pred_rel, 0.0, 1.0)
 
         pred_logits = outputs["logits"][j]
         obj_scores, pred_classes = torch.max(
