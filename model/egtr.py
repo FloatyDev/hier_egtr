@@ -294,7 +294,23 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
                 triplet_dist = triplet_dist.log()
             self.rel_dist = nn.Parameter(rel_dist, requires_grad=False)
             self.triplet_dist = nn.Parameter(triplet_dist, requires_grad=False)
-            del rel_dist, triplet_dist
+
+            # Family category distributions
+            fam_map = torch.tensor(get_super_rel_map(), dtype=torch.long)
+
+            geo_dist = self.rel_dist[fam_map == 0]
+            poss_dist = self.rel_dist[fam_map == 1]
+            sem_dist = self.rel_dist[fam_map == 2]
+
+            geo_dist = torch.clamp(geo_dist, min=1e-8)
+            poss_dist = torch.clamp(poss_dist, min=1e-8)
+            sem_dist = torch.clamp(sem_dist, min=1e-8)
+
+            self.register_buffer("geo_dist", geo_dist)
+            self.register_buffer("poss_dist", poss_dist)
+            self.register_buffer("sem_dist", sem_dist)
+
+            del rel_dist, triplet_dist, geo_dist, poss_dist, sem_dist
         else:  # when infer
             self.triplet_dist = nn.Parameter(
                 torch.Tensor(
@@ -641,10 +657,28 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
                 loss_dict.update(hier_rel_dict)
         # from <structured sparse rcnn>, post-hoc logit adjustment.
         # reference: https://github.com/google-research/google-research/blob/master/logit_adjustment/main.py#L136-L140
-        if self.config.logit_adjustment and not self.hierarchical:
-            pred_rel = pred_rel - self.config.logit_adj_tau * self.rel_dist.log().to(
-                pred_rel.device
-            )
+        if self.config.logit_adjustment:
+            if not self.config.hierarchical:
+                pred_rel = (
+                    pred_rel
+                    - self.config.logit_adj_tau
+                    * self.rel_dist.log().to(pred_rel.device)
+                )
+            else:
+                fam_map = torch.tensor(get_super_rel_map(), dtype=torch.long)
+                geo_dist = self.rel_dist[fam_map == 0]
+                poss_dist = self.rel_dist[fam_map == 1]
+                sem_dist = self.rel_dist[fam_map == 2]
+
+                geo_dist = torch.clamp(geo_dist, min=1e-8)
+                poss_dist = torch.clamp(poss_dist, min=1e-8)
+                sem_dist = torch.clamp(sem_dist, min=1e-8)
+                geo, poss, sem, super, hc = pred_rel
+                tau = self.config.logit_adj_tau
+                geo = geo - tau * geo_dist.log()
+                poss = poss - tau * poss_dist.log()
+                sem = sem - tau * sem_dist.log()
+                pred_rel = (geo, poss, sem, super, hc)
 
         pred_connectivity = pred_connectivity.sigmoid()
         if not self.config.hierarchical:
