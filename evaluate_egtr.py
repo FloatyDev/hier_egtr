@@ -78,7 +78,6 @@ def evaluate(
             output_hidden_states=True,
         )
         targets = batch["labels"]
-        ipdb.set_trace()
         if hierarchical:
             evaluate_batch(
                 outputs,
@@ -191,8 +190,8 @@ if __name__ == "__main__":
     # Speed up
     parser.add_argument("--num_workers", type=int, default=4)
     # Hierarchical
-    parser.add_argument("--hier", type=bool, default=False)
-    parser.add_argument("--use_class_context", type=bool, default=False)
+    parser.add_argument("--hier", type=str2bool, default=False)
+    parser.add_argument("--use_class_context", type=str2bool, default=False)
     args, unknown = parser.parse_known_args()  # to ignore args when training
 
     # Feature extractor
