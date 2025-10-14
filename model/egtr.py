@@ -321,6 +321,15 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
             self.rel_dist = nn.Parameter(
                 torch.Tensor(config.num_rel_labels), requires_grad=False
             )
+            self.geo_dist = nn.Parameter(
+                torch.tensor(config.num_geometric), requires_grad=False
+            )
+            self.sem_dist = nn.Parameter(
+                torch.tensor(config.num_semantic), requires_grad=False
+            )
+            self.poss_dist = nn.Parameter(
+                torch.tensor(config.num_possessive), requires_grad=False
+            )
 
         self.proj_q = nn.ModuleList(
             [
