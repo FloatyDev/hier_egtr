@@ -13,13 +13,22 @@ from tqdm import tqdm
 
 
 class VGDetection(torchvision.datasets.CocoDetection):
-    def __init__(self, data_folder, feature_extractor, split, debug=False):
-        ann_file = os.path.join(data_folder, f"{split}.json")
+    def __init__(
+        self, data_folder, feature_extractor, split, debug=False, ann_file_name=None
+    ):
+        if ann_file_name is None:
+            ann_file_name_to_load = f"{split}.json"
+        else:
+            ann_file_name_to_load = ann_file_name
+
+        ann_file = os.path.join(data_folder, ann_file_name_to_load)
         img_folder = os.path.join(data_folder, "images")
+        print(f"Loading COCO annotations from: {ann_file}")
         super(VGDetection, self).__init__(img_folder, ann_file)
         self.feature_extractor = feature_extractor
         self.split = split
         self.debug = debug
+        print(f"Loaded {len(self.ids)} image IDs from {ann_file_name_to_load}")
 
     def __getitem__(self, idx):
         # read in PIL image and target in COCO format
@@ -45,97 +54,49 @@ class VGDetection(torchvision.datasets.CocoDetection):
 
 class VGDataset(VGDetection):
     def __init__(
-        self, data_folder, feature_extractor, split, num_object_queries=100, debug=False
+        self,
+        data_folder,
+        feature_extractor,
+        split,
+        num_object_queries=100,
+        debug=False,
+        relation_file_name="rel.json",
+        ann_file_name=None
     ):
-        super(VGDataset, self).__init__(data_folder, feature_extractor, split, debug)
-        with open(f"{data_folder}/rel.json", "r") as f:
-            rel = json.load(f)
-        self.rel = rel[split]
-        self.rel_categories = rel["rel_categories"][1:]  # remove 'no_relation' category
-        self.num_object_queries = num_object_queries
-        self.num_geometric = 15
-        self.num_possessive = 11
-        self.num_semantic = 24
-        self.super_relation_map = [
-            # 1-6: geometric
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            # 7: attached to -> semantic
-            2,
-            # 8: behind -> geometric
-            0,
-            # 9: belonging to -> possessive
-            1,
-            # 10: between -> geometric
-            0,
-            # 11-14: semantic
-            2,
-            2,
-            2,
-            2,
-            # 15: flying in -> semantic
-            2,
-            # 16-17: misc -> possessive
-            1,
-            1,
-            # 18-19: semantic
-            2,
-            2,
-            # 20: has -> possessive
-            1,
-            # 21: holding -> semantic (light_semantic_posession treated as possessive)
-            1,
-            # 22-23: geometric
-            0,
-            0,
-            # 24-27: semantic
-            2,
-            2,
-            2,
-            1, # made of -> possessive
-            # 28: mounted on -> semantic
-            2,
-            # 29: near -> geometric
-            0,
-            # 30: of -> possessive
-            1,
-            # 31-33: geometric
-            0,
-            0,
-            0,
-            # 34-35: semantic
-            2,
-            2,
-            # 36: part of -> possessive
-            1,
-            # 37-41: semantic
-            2,
-            2,
-            2,
-            2,
-            2,
-            # 42: to -> possessive
-            1,
-            # 43: under -> geometric
-            0,
-            # 44: using -> possessive (light_semantic_posession treated as semantic)
-            1,
-            # 45-47: semantic
-            2,
-            2,
-            2,
-            # 48-49: wearing -> semantic
-            2,
-            2,
-            # 50: with -> possessive
-            1,
-        ]
+        super(VGDataset, self).__init__(data_folder, feature_extractor, split, debug, ann_file_name)
+        relation_file_path = os.path.join(data_folder, relation_file_name)
+        print(f"Loading relation annotations from: {relation_file_path}")
+        try:
+            with open(relation_file_path, "r") as f:
+                rel = json.load(f)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Relation file not found at {relation_file_path}")
 
-        self.original_to_sorted_idx = self._create_relation_sorting()
+        if split not in rel:
+            raise ValueError(
+                f"Split '{split}' not found in relation file {relation_file_name}"
+            )
+
+        self.rel = rel[split]
+
+        if "rel_categories" not in rel:
+            raise ValueError(f"'rel_categories' key not found in {relation_file_name}")
+
+        self.rel_categories = rel["rel_categories"]
+        print(
+            f"Loaded {len(self.rel_categories)} relation categories for this dataset."
+        )
+
+        self.num_object_queries = num_object_queries
+
+        rel_image_ids = {int(k) for k in self.rel.keys()}
+        coco_image_ids = set(self.ids)
+
+        if coco_image_ids != rel_image_ids:
+             print(f"Warning: Mismatch between image IDs ({len(coco_image_ids)}) and {relation_file_name} ({len(rel_image_ids)})!")
+             print(f" -> IDs only in COCO file: {list(coco_image_ids - rel_image_ids)[:5]}...")
+             print(f" -> IDs only in Relation file: {list(rel_image_ids - coco_image_ids)[:5]}...")
+             assert 0
 
     def __getitem__(self, idx):
         # read in PIL image and target in COCO format
@@ -157,34 +118,25 @@ class VGDataset(VGDetection):
 
         return pixel_values, target
 
-    def _create_relation_sorting(self):
-
-        indexed_supers = []
-        for original_idx in range(50):
-            super_val = self.super_relation_map[original_idx]
-            indexed_supers.append((original_idx, super_val))
-
-        indexed_supers.sort(key=lambda x: (x[1], x[0]))
-
-        # Create mapping from original index to sorted position
-        return {
-            original_idx: sorted_idx
-            for sorted_idx, (original_idx, _) in enumerate(indexed_supers)
-        }
-
     def _get_rel_tensor(self, rel_tensor):
         indices = rel_tensor.T
-        indices[-1, :] -= 1  # remove 'no_relation' category
+        num_family_rel = len(self.rel_categories)
 
-        rel = torch.zeros([self.num_object_queries, self.num_object_queries, 50])
+        rel = torch.zeros(
+            [self.num_object_queries, self.num_object_queries, num_family_rel]
+        )
+        if torch.tensor(indices).numel() > 0:
+            s_indices = torch.tensor(indices[0, :])
+            o_indices = torch.tensor(indices[1, :])
+            r_indices = torch.tensor(indices[2, :])
 
-        ## map each relation to sorted position
-        #for i in range(indices.shape[1]):
-        #    orig_rel_idx = indices[2, i]
-        #    sorted_idx = self.original_to_sorted_idx[orig_rel_idx]
-        #    s = indices[0, i]
-        #    o = indices[1, i]
-        #    rel[s, o, sorted_idx] = 1.0
+            valid_s = (s_indices >= 0) & (s_indices < self.num_object_queries)
+            valid_o = (o_indices >= 0) & (o_indices < self.num_object_queries)
+            valid_r = (r_indices >= 0) & (r_indices < num_family_rel)
+            valid_mask = torch.logical_and(torch.logical_and(valid_s, valid_o), valid_r)
+
+            if not torch.all(valid_mask):
+                assert 0, "Out-of-bounds indices detected in _get_rel_tensor"
 
         # map each relation to original position
         rel[indices[0, :], indices[1, :], indices[2, :]] = 1.0
@@ -216,9 +168,16 @@ def vg_get_statistics(train_data, must_overlap=True):
     for idx in tqdm(range(len(train_data))):
         image_id = train_data.ids[idx]
 
+        if str(image_id) not in rel:
+            assert 0,"image_id not in rel"# skip if this image has no relations for the specified family
+
         target = train_data.coco.loadAnns(train_data.coco.getAnnIds(image_id))
         gt_classes = np.array(list(map(lambda x: x["category_id"], target)))
         rel_list = rel[str(image_id)]
+
+        if not rel_list:
+            assert 0, "Should not contain empty relation list"
+
         gt_indices = np.array(torch.Tensor(rel_list).T, dtype="int64")
         gt_indices[-1, :] -= 1
 

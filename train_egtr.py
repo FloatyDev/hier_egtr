@@ -342,7 +342,11 @@ class SGG(pl.LightningModule):
                 )[-1]
                 state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
                 for k in list(state_dict.keys()):
-                    if k.startswith("model.rel_predictor."):
+                    if (
+                        k.startswith("model.rel_predictor.")
+                        or k.startswith("model.rel_dist")
+                        or k.startswith("model.triplet_dist")
+                    ):
                         print(f"----deleting {k}")
                         del state_dict[k]
                     else:
@@ -679,6 +683,13 @@ def build_parser(parser):
     parser.add_argument("--train_head", type=str2bool, default=False)
     parser.add_argument("--artifact_path", type=str, default="")
     parser.add_argument("--load_model", type=str, default="")
+    parser.add_argument(
+        "--relation_family",
+        type=str,
+        default="all",  # Default to original behavior
+        choices=["all", "geometric", "possessive", "semantic"],
+        help="Specify which relationship family to train",
+    )
     parser.add_argument("--use_class_context", type=str2bool, default=False)
 
     return parser
@@ -726,6 +737,27 @@ if __name__ == "__main__":
         )
     )
 
+    # Default behavior
+    relation_file_name = "rel.json"
+    ann_file_name_eval = f"{args.split}.json"
+    ann_file_name_train = f"train.json"
+    ann_file_name_val = f"val.json"
+    num_rel_labels_for_family = 50  # Default for 'all'
+    family_suffix = ""
+
+    if args.relation_family != "all":
+        family_name = args.relation_family
+        relation_file_name = f"rel_{family_name}.json"
+        ann_file_name_eval = f"{args.split}_{family_name}.json"
+        ann_file_name_train = f"train_{family_name}.json"
+        ann_file_name_val = f"val_{family_name}.json"
+
+    print(f"--- Training/Evaluating Family: {args.relation_family} ---")
+    print(f"Using relation file: {relation_file_name}")
+    print(
+        f"Using annotation files: {ann_file_name_train} (train), {ann_file_name_eval} (val)"
+    )
+
     # Dataset
     if "visual_genome" in args.data_path:
         train_dataset = VGDataset(
@@ -734,16 +766,22 @@ if __name__ == "__main__":
             split="train",
             num_object_queries=args.num_queries,
             debug=args.debug,
+            relation_file_name=relation_file_name,
+            ann_file_name=ann_file_name_train,
         )
         val_dataset = VGDataset(
             data_folder=args.data_path,
             feature_extractor=feature_extractor,
             split="val",
             num_object_queries=args.num_queries,
+            relation_file_name=relation_file_name,
+            ann_file_name=ann_file_name_val,
         )
         cats = train_dataset.coco.cats
         id2label = {k - 1: v["name"] for k, v in cats.items()}  # 0 ~ 149
         fg_matrix = vg_get_statistics(train_dataset, must_overlap=True)
+        if fg_matrix is not None:
+            print(f"Calculated fg_matrix with shape: {fg_matrix.shape}")
     else:
         train_dataset = OIDataset(
             data_folder=args.data_path,
@@ -840,6 +878,8 @@ if __name__ == "__main__":
         name += "__hier"
     if args.train_head:
         name += "train_rel_head"
+    if family_suffix != "":
+        name += f"{family_suffix}"
     if args.resume:
         version = args.version  # for resuming
     else:
@@ -850,7 +890,7 @@ if __name__ == "__main__":
 
     # initialize wandblogger
     wandb_logger = WandbLogger(
-        project="hier-egtr", log_model=False, save_dir="./logs", name=name
+        project="hier-egtr-category-classifiers", log_model=False, save_dir="./logs", name=name
     )
 
     logger_list = [tensorboard_logger, wandb_logger]
@@ -1118,6 +1158,8 @@ if __name__ == "__main__":
                 feature_extractor=feature_extractor,
                 split=args.split,
                 num_object_queries=args.num_queries,
+                relation_file_name=relation_file_name,
+                ann_file_name=ann_file_name_eval,
             )
         else:
             test_dataset = OIDataset(

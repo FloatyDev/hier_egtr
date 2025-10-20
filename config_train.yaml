@@ -8,6 +8,7 @@ architecture: "SenseTime/deformable-detr"
 auxiliary_loss: false
 from_scratch: false
 pretrained: "pretrained_detr_vg/pretrained_detr__SenseTime__deformable-detr/batch__32__epochs__150_50__lr__1e-05_0.0001__visual_genome__finetune/version_0"  # Required - change this to your desired pretrained model
+relation_family: "geometric"
 
 # Hyperparameters
 num_queries: 200
@@ -42,7 +43,7 @@ filter_multiple_rels: true
 use_freq_bias: true
 use_log_softmax: false
 use_class_context: true
-load_model: ./results/egtr__pretrained_detr__SenseTime__deformable-detr__batch__32__epochs__150_50__lr__1e-05_0.0001__visual_genome__finetune__version_0/batch__4__epochs__50_25__lr_bbone__2e-07__lr2e-06__lr_init1e-06__uniformly_balanced_superprob__hier__train_rel_head/version_0/
+load_model:
 
 # Evaluation
 skip_train: false
@@ -57,7 +58,7 @@ logit_adj_tau: 0.3
 # Speed up
 num_workers: 4
 precision: 32  # choices: 16, 32
-hierarchical: true
+hierarchical: false
 num_geometric: 15
 num_possessive: 11
 num_semantic: 24
