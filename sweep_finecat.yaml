@@ -1,0 +1,43 @@
+# sweep.yaml
+program: train_egtr.py
+method: bayes
+metric:
+  name: validation_loss
+  goal: minimize
+
+# Tweak 1: Add early termination to prune bad runs
+early_terminate:
+  type: hyperband
+  min_iter: 3 # Stops runs that perform poorly after 5 epochs
+
+parameters:
+  lr_init:
+    distribution: log_uniform_values
+    min: 1e-8
+    max: 1e-5
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-3
+  rel_loss_coefficient:
+    values: [10.0, 15.0, 20.0]
+
+  max_epochs:
+    value: 5
+  patience:
+    value: 5
+  train_head:
+    value: true
+  hierarchical:
+    value: false
+  gpus:
+    value: 1
+  relation_family:
+    value: "geometric" # change accordingly
+
+command:
+  - ${env}
+  - python3
+  - ${program}
+  - --config=config_train.yaml # Use your base config
+  - ${args}

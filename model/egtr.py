@@ -1056,7 +1056,7 @@ class SceneGraphGenerationLoss(nn.Module):
                     )
             losses.append(loss)
         main_loss_dict = {
-            "loss_rel": torch.stack(
+            "loss_rel": torch.cat(
                 losses
             ).mean(),  # maybe use cat and ajdust dimension of loss.view(-1)/loss.unsqueeze(-1)
             "loss_connectivity": torch.stack(connect_losses).mean(),
