@@ -673,7 +673,7 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
             encoder_last_hidden_state=outputs.encoder_last_hidden_state,
             encoder_hidden_states=outputs.encoder_hidden_states,
             encoder_attentions=outputs.encoder_attentions,
-            gated_relation_source=outputs.gated_relation_source,
+            gated_relation_source=gated_relation_source,
         )
 
 
