@@ -273,7 +273,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument(
         "--use_class_context",
-        type=bool,
+        type=str2bool,
         default=False,
         help="Whether the models were trained with class context",
     )
