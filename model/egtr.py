@@ -115,6 +115,7 @@ class DetrSceneGraphGenerationOutput(ModelOutput):
     encoder_last_hidden_state: Optional[torch.FloatTensor] = None
     encoder_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     encoder_attentions: Optional[Tuple[torch.FloatTensor]] = None
+    gated_relation_source: Optional[torch.FloatTensor] = None
 
 
 def _get_clones(module, N):
@@ -545,7 +546,7 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
                 dim=0,
             )
 
-        del gated_relation_source
+        # del gated_relation_source
         del relation_source
 
         loss, loss_dict, auxiliary_outputs = None, None, None
@@ -672,6 +673,7 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
             encoder_last_hidden_state=outputs.encoder_last_hidden_state,
             encoder_hidden_states=outputs.encoder_hidden_states,
             encoder_attentions=outputs.encoder_attentions,
+            gated_relation_source=outputs.gated_relation_source,
         )
 
 
