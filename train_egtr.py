@@ -747,11 +747,11 @@ if __name__ == "__main__":
     family_suffix = ""
 
     if args.relation_family != "all":
-        family_name = args.relation_family
-        relation_file_name = f"rel_{family_name}.json"
-        ann_file_name_eval = f"{args.split}_{family_name}.json"
-        ann_file_name_train = f"train_{family_name}.json"
-        ann_file_name_val = f"val_{family_name}.json"
+        family_suffix = args.relation_family
+        relation_file_name = f"rel_{family_suffix}.json"
+        ann_file_name_eval = f"{args.split}_{family_suffix}.json"
+        ann_file_name_train = f"train_{family_suffix}.json"
+        ann_file_name_val = f"val_{family_suffix}.json"
 
     print(f"--- Training/Evaluating Family: {args.relation_family} ---")
     print(f"Using relation file: {relation_file_name}")
@@ -879,8 +879,8 @@ if __name__ == "__main__":
         name += "__hier"
     if args.train_head:
         name += "train_rel_head"
-    if family_suffix != "":
-        name += f"{family_suffix}"
+    if args.relation_family:
+        name += f"__{family_suffix}"
     if args.resume:
         version = args.version  # for resuming
     else:
