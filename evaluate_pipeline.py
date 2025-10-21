@@ -97,7 +97,6 @@ def evaluate_pipeline(
                 (index, name, BasicSceneGraphEvaluator.all_modes(multiple_preds=False))
             )
 
-    # Get family indices for the final 50-relation tensor
     orig2fam_tensor = torch.as_tensor(orig2fam).to(device)
     geo_indices = (orig2fam_tensor == 0).nonzero().squeeze()
     poss_indices = (orig2fam_tensor == 1).nonzero().squeeze()
@@ -118,24 +117,21 @@ def evaluate_pipeline(
             output_hidden_states=True,
         )
 
-        # Extract all common features
         logits = outputs.logits
         pred_boxes = outputs.pred_boxes
         pred_connectivity = outputs.pred_connectivity
 
-        # This is the critical feature tensor you exposed
         gated_features = outputs.gated_relation_source
 
-        # outputs.pred_rel is (geo, poss, sem, super, hc)
         super_family_probs = outputs.pred_rel[3].softmax(-1)  # [B, N, N, 3]
         prob_geo = super_family_probs[..., 0:1]
         prob_poss = super_family_probs[..., 1:2]
         prob_sem = super_family_probs[..., 2:3]
 
         # trained with BCE, so we sigmoid the output
-        geo_probs = predictor_geo(gated_features, logits).sigmoid()
-        poss_probs = predictor_poss(gated_features, logits).sigmoid()
-        sem_probs = predictor_sem(gated_features, logits).sigmoid()
+        geo_probs = predictor_geo(gated_features).sigmoid()
+        poss_probs = predictor_poss(gated_features).sigmoid()
+        sem_probs = predictor_sem(gated_features).sigmoid()
 
         B, N, _, _ = geo_probs.shape
         num_total_rels = len(orig2fam)
@@ -368,7 +364,6 @@ if __name__ == "__main__":
         max(id2label.keys()) + 1,
         multiple_sgg_evaluator,
         single_sgg_evaluator,
-        oi_evaluator,
         coco_evaluator,
         feature_extractor,
         orig2fam,
