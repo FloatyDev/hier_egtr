@@ -370,6 +370,7 @@ class SGG(pl.LightningModule):
                 # "final_sub_proj",  # keeps sub-object embeddings in sync
                 # "final_obj_proj",  # keeps object embeddings in sync
                 "rel_predictor_gate",  # tiny gate mlp, if you use it
+                "connectivity_layer"
             )
 
             for n, p in self.model.named_parameters():
