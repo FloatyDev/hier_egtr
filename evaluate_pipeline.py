@@ -63,12 +63,14 @@ def load_specialist_predictor(path, use_class_context, device):
 
 @torch.no_grad()
 def evaluate_pipeline(
-    model_super,
+    model_egtr,
+    predictor_super_family,
     predictor_geo,
     predictor_poss,
     predictor_sem,
     dataloader,
     num_labels,
+    device,
     multiple_sgg_evaluator=None,
     single_sgg_evaluator=None,
     oi_evaluator=None,
@@ -76,13 +78,12 @@ def evaluate_pipeline(
     feature_extractor=None,
     orig2fam=None,
     orig2famidx=None,
-    device=None,
 ):
     """
     Runs the full 4-model evaluation pipeline.
     """
     metric_dict = {}
-    model_super.eval()
+    model_egtr.eval()
 
     multiple_sgg_evaluator_list = []
     single_sgg_evaluator_list = []
@@ -109,7 +110,7 @@ def evaluate_pipeline(
             {k: v.cpu() for k, v in label.items()} for label in batch["labels"]
         ]  # Targets stay on CPU
 
-        outputs = model_super(
+        outputs = model_egtr(
             pixel_values=pixel_values,
             pixel_mask=pixel_mask,
             output_attentions=False,
@@ -123,7 +124,8 @@ def evaluate_pipeline(
 
         gated_features = outputs.gated_relation_source
 
-        super_family_probs = outputs.pred_rel[3].softmax(-1)  # [B, N, N, 3]
+        # Log_softmax output
+        super_family_probs = predictor_super_family(gated_features).exp()
         prob_geo = super_family_probs[..., 0:1]
         prob_poss = super_family_probs[..., 1:2]
         prob_sem = super_family_probs[..., 2:3]
@@ -164,10 +166,10 @@ def evaluate_pipeline(
             orig_target_sizes = torch.stack(
                 [target["orig_size"] for target in targets], dim=0
             )
-            # We must use the *original* 'outputs' object from model_super
+            # We must use the *original* 'outputs' object from model_egtr
             # as post_process expects the raw model output, not our dict
             results = feature_extractor.post_process(
-                outputs, orig_target_sizes.to(model_super.device)
+                outputs, orig_target_sizes.to(model_egtr.device)
             )
             res = {
                 target["image_id"].item(): output
@@ -223,10 +225,16 @@ if __name__ == "__main__":
     parser.add_argument("--data_path", type=str, default="dataset/visual_genome")
 
     parser.add_argument(
-        "--path_super",
+        "--path_egtr",
         type=str,
         required=True,
         help="Path to the main hierarchical model artifact",
+    )
+    parser.add_argument(
+        "--path_super_family",
+        type=str,
+        required=True,
+        help="Path to the specialist super family model artifact",
     )
     parser.add_argument(
         "--path_geo",
@@ -316,14 +324,14 @@ if __name__ == "__main__":
     if args.eval_single_preds:
         single_sgg_evaluator = BasicSceneGraphEvaluator.all_modes(multiple_preds=False)
 
-    print(f"Loading super model from: {args.path_super}")
-    config_super = DeformableDetrConfig.from_pretrained(args.path_super)
-    config_super.hierarchical = True  # Super model IS hierarchical
-    config_super.use_class_context = args.use_class_context
-    config_super.logit_adjustment = args.logit_adjustment
-    config_super.logit_adj_tau = args.logit_adj_tau
+    print(f"Loading super model from: {args.path_egtr}")
+    config_egtr = DeformableDetrConfig.from_pretrained(args.path_egtr)
+    config_egtr.hierarchical = False  # EGTR is not hierarchical 
+    config_egtr.use_class_context = False
+    config_egtr.logit_adjustment = args.logit_adjustment
+    config_egtr.logit_adj_tau = args.logit_adj_tau
 
-    model_super = DetrForSceneGraphGeneration(config=config_super)
+    model_egtr = DetrForSceneGraphGeneration(config=config_egtr)
 
     ckpt_to_load = sorted(
         glob(f"{args.path_super}/checkpoints/epoch=*.ckpt"),
@@ -334,14 +342,16 @@ if __name__ == "__main__":
     for k in list(state_dict.keys()):
         state_dict[k[6:]] = state_dict.pop(k)  # "model."
 
-    missing, unexpected = model_super.load_state_dict(state_dict)
+    missing, unexpected = model_egtr.load_state_dict(state_dict)
     print(
         f"✓ loaded super model {ckpt_to_load} "
         f"({len(unexpected)} unexpected • {len(missing)} missing)"
     )
-    model_super.to(device)
+    model_egtr.to(device)
 
-    # 2. Load Specialist Predictor Heads
+    predictor_super_family = load_specialist_predictor(
+        args.path_super_family, args.use_class_context, device
+    )
     predictor_geo = load_specialist_predictor(
         args.path_geo, args.use_class_context, device
     )
@@ -356,7 +366,8 @@ if __name__ == "__main__":
     orig2famidx, _, _, _ = get_orig2idx()
 
     metric = evaluate_pipeline(
-        model_super,
+        model_egtr,
+        predictor_super_family,
         predictor_geo,
         predictor_poss,
         predictor_sem,
