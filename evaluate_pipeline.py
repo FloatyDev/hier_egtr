@@ -71,13 +71,12 @@ def evaluate_pipeline(
     dataloader,
     num_labels,
     device,
+    orig2fam,
     multiple_sgg_evaluator=None,
     single_sgg_evaluator=None,
     oi_evaluator=None,
     coco_evaluator=None,
     feature_extractor=None,
-    orig2fam=None,
-    orig2famidx=None,
 ):
     """
     Runs the full 4-model evaluation pipeline.
@@ -99,9 +98,9 @@ def evaluate_pipeline(
             )
 
     orig2fam_tensor = torch.as_tensor(orig2fam).to(device)
-    geo_indices = (orig2fam_tensor == 0).nonzero().squeeze()
-    poss_indices = (orig2fam_tensor == 1).nonzero().squeeze()
-    sem_indices = (orig2fam_tensor == 2).nonzero().squeeze()
+    geo_indices = (orig2fam_tensor == 0).nonzero().squeeze(-1)
+    poss_indices = (orig2fam_tensor == 1).nonzero().squeeze(-1)
+    sem_indices = (orig2fam_tensor == 2).nonzero().squeeze(-1)
 
     for batch in tqdm(dataloader):
         pixel_values = batch["pixel_values"].to(device)
@@ -373,13 +372,13 @@ if __name__ == "__main__":
         predictor_sem,
         test_dataloader,
         max(id2label.keys()) + 1,
+        device,
+        orig2fam,
         multiple_sgg_evaluator,
         single_sgg_evaluator,
+        oi_evaluator,
         coco_evaluator,
         feature_extractor,
-        orig2fam,
-        orig2famidx,
-        device,
     )
 
     device_name = "".join(torch.cuda.get_device_name(0).split()[1:2])
