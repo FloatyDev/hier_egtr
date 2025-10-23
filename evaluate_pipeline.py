@@ -29,7 +29,7 @@ from train_egtr import collate_fn, evaluate_batch
 
 
 @torch.no_grad()
-def load_specialist_predictor(path, use_class_context, device):
+def load_specialist_predictor(path, use_class_context, device, hierarchical=False):
     """
     Loads a specialist (flat) model from a checkpoint and
     returns only its relation predictor head.
@@ -38,7 +38,7 @@ def load_specialist_predictor(path, use_class_context, device):
 
     # Load config, ensuring it's set to flat (non-hierarchical)
     config = DeformableDetrConfig.from_pretrained(path)
-    config.hierarchical = False  # Specialists are flat models
+    config.hierarchical = hierarchical
     config.use_class_context = use_class_context
 
     # Load the full model structure
@@ -102,7 +102,7 @@ def evaluate_pipeline(
     poss_indices = (orig2fam_tensor == 1).nonzero().squeeze(-1)
     sem_indices = (orig2fam_tensor == 2).nonzero().squeeze(-1)
 
-    for batch in tqdm(dataloader):
+    for batch_idx, batch in enumerate(tqdm(dataloader)):
         pixel_values = batch["pixel_values"].to(device)
         pixel_mask = batch["pixel_mask"].to(device)
         targets = [
@@ -124,12 +124,14 @@ def evaluate_pipeline(
         gated_features = outputs.gated_relation_source
 
         # Log_softmax output
-        super_family_probs = predictor_super_family(gated_features).exp()
+        super_family_probs = predictor_super_family(gated_features)[0]
+        super_family_probs = super_family_probs.exp()
         prob_geo = super_family_probs[..., 0:1]
         prob_poss = super_family_probs[..., 1:2]
         prob_sem = super_family_probs[..., 2:3]
 
         # trained with BCE, so we sigmoid the output
+
         geo_probs = predictor_geo(gated_features).sigmoid()
         poss_probs = predictor_poss(gated_features).sigmoid()
         sem_probs = predictor_sem(gated_features).sigmoid()
@@ -325,7 +327,7 @@ if __name__ == "__main__":
 
     print(f"Loading super model from: {args.path_egtr}")
     config_egtr = DeformableDetrConfig.from_pretrained(args.path_egtr)
-    config_egtr.hierarchical = False  # EGTR is not hierarchical 
+    config_egtr.hierarchical = False  # EGTR is not hierarchical
     config_egtr.use_class_context = False
     config_egtr.logit_adjustment = args.logit_adjustment
     config_egtr.logit_adj_tau = args.logit_adj_tau
@@ -333,7 +335,7 @@ if __name__ == "__main__":
     model_egtr = DetrForSceneGraphGeneration(config=config_egtr)
 
     ckpt_to_load = sorted(
-        glob(f"{args.path_super}/checkpoints/epoch=*.ckpt"),
+        glob(f"{args.path_egtr}/checkpoints/epoch=*.ckpt"),
         key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
     )[-1]
 
@@ -349,7 +351,7 @@ if __name__ == "__main__":
     model_egtr.to(device)
 
     predictor_super_family = load_specialist_predictor(
-        args.path_super_family, args.use_class_context, device
+        args.path_super_family, args.use_class_context, device, hierarchical=True
     )
     predictor_geo = load_specialist_predictor(
         args.path_geo, args.use_class_context, device

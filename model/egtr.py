@@ -156,7 +156,7 @@ class BayesianRelationClassifier(nn.Module):
     def forward(
         self,
         features,  # gated_relation_source: (bsz, N, N, feat_dim)
-        det_logits,  # class logits: (bsz, N, num_classes)
+        det_logits = None # class logits: (bsz, N, num_classes)
     ):
         B, N, _, D = features.shape
 
