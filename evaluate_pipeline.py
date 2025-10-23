@@ -345,7 +345,7 @@ if __name__ == "__main__":
 
     missing, unexpected = model_egtr.load_state_dict(state_dict)
     print(
-        f"✓ loaded super model {ckpt_to_load} "
+        f"✓ loaded egtr model {ckpt_to_load} "
         f"({len(unexpected)} unexpected • {len(missing)} missing)"
     )
     model_egtr.to(device)
