@@ -78,7 +78,6 @@ def evaluate(
             output_hidden_states=True,
         )
         targets = batch["labels"]
-        ipdb.set_trace()
         if hierarchical:
             evaluate_batch(
                 outputs,
@@ -193,12 +192,15 @@ if __name__ == "__main__":
     # Hierarchical
     parser.add_argument("--hier", type=bool, default=False)
     parser.add_argument("--use_class_context", type=bool, default=False)
+    parser.add_argument("--family", type=str, default=None)
     args, unknown = parser.parse_known_args()  # to ignore args when training
 
     # Feature extractor
     feature_extractor = DeformableDetrFeatureExtractor.from_pretrained(
         args.architecture, size=args.min_size, max_size=args.max_size
     )
+    relation_file_name = f"rel_{args.family}.json" if args.family else "rel.json"
+    ann_file_name_eval = f"{args.split}_{args.family}.json" if args.family else None
 
     # Dataset
     if "visual_genome" in args.data_path:
@@ -207,6 +209,8 @@ if __name__ == "__main__":
             feature_extractor=feature_extractor,
             split=args.split,
             num_object_queries=args.num_queries,
+            relation_file_name=relation_file_name,
+            ann_file_name=ann_file_name_eval,
         )
         id2label = {
             k - 1: v["name"] for k, v in test_dataset.coco.cats.items()
@@ -298,6 +302,8 @@ if __name__ == "__main__":
         # Save eval metric
         device = "".join(torch.cuda.get_device_name(0).split()[1:2])
         filename = f'{ckpt_to_load.replace(".ckpt", "")}__{args.split}__{len(test_dataloader)}__{device}'
+        if args.family:
+            filename += f"__{args.family}"
         if args.logit_adjustment:
             filename += f"__la_{args.logit_adj_tau}"
         metric["eval_arg"] = args.__dict__
