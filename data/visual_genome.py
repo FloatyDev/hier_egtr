@@ -82,10 +82,13 @@ class VGDataset(VGDetection):
         if "rel_categories" not in rel:
             raise ValueError(f"'rel_categories' key not found in {relation_file_name}")
 
-        if rel["rel_categories"][0] == "__backround__":
+        if rel["rel_categories"][0] == "__background__":
             self.rel_categories = rel["rel_categories"][1:]
+            self.bg_class = True
         else:
             self.rel_categories = rel["rel_categories"]
+            self.bg_class = False
+
         print(
             f"Loaded {len(self.rel_categories)} relation categories for this dataset."
         )
@@ -125,8 +128,8 @@ class VGDataset(VGDetection):
         indices = rel_tensor.T
         num_family_rel = len(self.rel_categories)
 
-        if self.rel_categories[0] == "__backround__":
-            indices[-1, :] -= 1  # remove 'no_relation' category
+        if self.bg_class:
+            indices[-1, :] -= 1  # remove 'no_relation' category only if using rel.json
 
         rel = torch.zeros(
             [self.num_object_queries, self.num_object_queries, num_family_rel]

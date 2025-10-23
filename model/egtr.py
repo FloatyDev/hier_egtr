@@ -151,25 +151,7 @@ class BayesianRelationClassifier(nn.Module):
         else:
             fused_dim = input_dim
 
-        # Prediction heads
-        self.shared_fc = nn.Sequential(
-            nn.Linear(fused_dim, 512),  # 512 + class emb
-            nn.ReLU(),
-            nn.Dropout(p=0.5),
-            nn.Linear(512, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-        )
-
-        # Relationship heads
-        self.fc3_1 = nn.Linear(512, num_geometric)
-        self.fc3_2 = nn.Linear(512, num_possessive)
-        self.fc3_3 = nn.Linear(512, num_semantic)
         self.fc5 = nn.Linear(512, 3)  # Super relation
-
-        self.T1 = T1
-        self.T2 = T2
-        self.T3 = T3
 
     def forward(
         self,
@@ -198,37 +180,13 @@ class BayesianRelationClassifier(nn.Module):
             combined = features
 
         ## Process features (operates on last dimension)
-        hc = self.shared_fc(combined)  # (bsz, N, N, 512)
+        hc = combined  # (bsz, N, N, 512)
 
         # Compute outputs
         super_relation = F.log_softmax(self.fc5(hc), dim=-1)  # (bsz, N, N, 3)
 
-        # Compute hierarchical relationships
-        relation_1 = F.log_softmax(self.fc3_1(hc) / self.T1, dim=-1) + super_relation[
-            ..., 0
-        ].unsqueeze(
-            -1
-        )  # geo
+        return super_relation,  # (bsz, N, N, 3)
 
-        relation_2 = F.log_softmax(self.fc3_2(hc) / self.T2, dim=-1) + super_relation[
-            ..., 1
-        ].unsqueeze(
-            -1
-        )  # poss
-
-        relation_3 = F.log_softmax(self.fc3_3(hc) / self.T3, dim=-1) + super_relation[
-            ..., 2
-        ].unsqueeze(
-            -1
-        )  # sem
-
-        return (
-            relation_1,  # (bsz, N, N, num_geometric)
-            relation_2,  # (bsz, N, N, num_possessive)
-            relation_3,  # (bsz, N, N, num_semantic)
-            super_relation,  # (bsz, N, N, 3)
-            hc,  # (bsz, N, N, 512) - intermediate features
-        )
 
 
 class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
