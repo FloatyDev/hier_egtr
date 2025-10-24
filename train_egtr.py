@@ -13,6 +13,7 @@ from glob import glob
 from pathlib import Path
 from pytorch_lightning.callbacks import Callback
 
+import wandb
 import ipdb
 import numpy as np
 import pytorch_lightning as pl
@@ -712,7 +713,11 @@ def parse_args():
 
 
 if __name__ == "__main__":
+
     args = parse_args()
+
+    wandb.init(config=args)
+
     if args.from_scratch:
         args.pretrained = args.architecture
 
