@@ -294,6 +294,41 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
                 triplet_dist = triplet_dist.log()
             self.rel_dist = nn.Parameter(rel_dist, requires_grad=False)
             self.triplet_dist = nn.Parameter(triplet_dist, requires_grad=False)
+            if config.hierarchical:
+                orig2famidx, num_geo, num_poss, num_sem = get_orig2idx()
+                orig2fam = torch.tensor(get_super_rel_map(), dtype=torch.long)
+
+                # Geometric Priors
+                geo_mask = orig2fam == 0  # Mask for original 50 relations
+                fg_matrix_geo = fg_matrix[
+                    :, :, geo_mask
+                ]  # Select counts for geo relations
+                triplet_dist_geo = torch.FloatTensor(
+                    fg_matrix_geo + eps / (fg_matrix_geo.sum(2, keepdims=True) + eps)
+                ).log()  # Shape [O, O, num_geo]
+                self.triplet_dist_geo = nn.Parameter(
+                    triplet_dist_geo, requires_grad=False
+                )
+
+                # Possessive Priors
+                poss_mask = orig2fam == 1
+                fg_matrix_poss = fg_matrix[:, :, poss_mask]
+                triplet_dist_poss = torch.FloatTensor(
+                    fg_matrix_poss + eps / (fg_matrix_poss.sum(2, keepdims=True) + eps)
+                ).log()  # Shape [O, O, num_poss]
+                self.triplet_dist_poss = nn.Parameter(
+                    triplet_dist_poss, requires_grad=False
+                )
+
+                # Semantic Priors
+                sem_mask = orig2fam == 2
+                fg_matrix_sem = fg_matrix[:, :, sem_mask]
+                triplet_dist_sem = torch.FloatTensor(
+                    fg_matrix_sem + eps / (fg_matrix_sem.sum(2, keepdims=True) + eps)
+                ).log()  # Shape [O, O, num_sem]
+                self.triplet_dist_sem = nn.Parameter(
+                    triplet_dist_sem, requires_grad=False
+                )
             del rel_dist, triplet_dist
         else:  # when infer
             self.triplet_dist = nn.Parameter(
@@ -305,6 +340,31 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
             self.rel_dist = nn.Parameter(
                 torch.Tensor(config.num_rel_labels), requires_grad=False
             )
+            if config.hierarchical:
+                self.triplet_dist_geo = nn.Parameter(
+                    torch.empty(
+                        config.num_labels + 2,
+                        config.num_labels + 1,
+                        config.num_geometric,
+                    ),
+                    requires_grad=False,
+                )
+                self.triplet_dist_poss = nn.Parameter(
+                    torch.empty(
+                        config.num_labels + 1,
+                        config.num_labels + 1,
+                        config.num_possessive,
+                    ),
+                    requires_grad=False,
+                )
+                self.triplet_dist_sem = nn.Parameter(
+                    torch.empty(
+                        config.num_labels + 1,
+                        config.num_labels + 1,
+                        config.num_semantic,
+                    ),
+                    requires_grad=False,
+                )
 
         self.proj_q = nn.ModuleList(
             [
@@ -744,12 +804,6 @@ class SceneGraphGenerationLoss(nn.Module):
         self.hierarchical = hierarchical
 
         if hierarchical:
-            # Use NLLLoss for each relationship category
-            self.geo_loss = nn.NLLLoss(reduction="none")
-            self.poss_loss = nn.NLLLoss(reduction="none")
-            self.sem_loss = nn.NLLLoss(reduction="none")
-            self.super_loss = nn.NLLLoss(reduction="none")
-
             orig2famidx, num_geo, num_poss, num_sem = get_orig2idx()
 
             self.register_buffer(
@@ -764,49 +818,9 @@ class SceneGraphGenerationLoss(nn.Module):
             self.num_semantic = num_sem
             self.super_weight = super_weight
 
-            def class_balanced_weights(
-                counts: torch.Tensor, beta: float = 0.99, eps: float = 1e-12
-            ):
-                # counts: [K] (can be zero)
-                eff_num = 1.0 - torch.pow(beta, counts.clamp(min=0))
-                w = (1.0 - beta) / (eff_num + eps)  # larger for rarer classes
-                w = w / w.mean()  # normalize to mean=1 to keep loss scale stable
-                return w
-
-            if fg_matrix is not None:
-                rel_counts = torch.from_numpy(fg_matrix.sum(axis=(0, 1))).float()  # [R]
-
-                fam_map = torch.tensor(self.super_relation_map, dtype=torch.long)
-                mask_geo = fam_map == 0
-                mask_poss = fam_map == 1
-                mask_sem = fam_map == 2
-
-                w = class_balanced_weights(rel_counts, beta=0.9999)
-                w_geo = w[mask_geo]
-                w_poss = w[mask_poss]
-                w_sem = w[mask_sem]
-                # w_geo = class_balanced_weights(rel_counts[mask_geo], beta=0.9999)
-                # w_poss = class_balanced_weights(rel_counts[mask_poss], beta=0.9999)
-                # w_sem = class_balanced_weights(rel_counts[mask_sem], beta=0.9999)
-
-                # Register as buffers so they move with .to(device) and save in checkpoints
-                self.register_buffer("w_geo", w_geo, persistent=True)
-                self.register_buffer("w_poss", w_poss, persistent=True)
-                self.register_buffer("w_sem", w_sem, persistent=True)
-            else:
-                self.register_buffer(
-                    "w_geo", torch.ones(self.num_geometric), persistent=True
-                )
-                self.register_buffer(
-                    "w_poss", torch.ones(self.num_possessive), persistent=True
-                )
-                self.register_buffer(
-                    "w_sem", torch.ones(self.num_semantic), persistent=True
-                )
-
-            self.geo_loss = nn.NLLLoss(weight=self.w_geo, reduction="none")
-            self.poss_loss = nn.NLLLoss(weight=self.w_poss, reduction="none")
-            self.sem_loss = nn.NLLLoss(weight=self.w_sem, reduction="none")
+            self.geo_loss = nn.NLLLoss(reduction="none")
+            self.poss_loss = nn.NLLLoss(reduction="none")
+            self.sem_loss = nn.NLLLoss(reduction="none")
             self.super_loss = nn.NLLLoss(reduction="none")
         else:
             # Original BCEWithLogitsLoss for flat mode

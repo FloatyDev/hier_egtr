@@ -85,7 +85,6 @@ def evaluate_batch(
     for j, target in enumerate(targets):
         # Pred
         if hierarchical:
-            ipdb.set_trace()
             geo, poss, sem, super, _ = outputs["pred_rel"]
             geo = geo[0].exp()
             poss = poss[0].exp()
@@ -366,7 +365,7 @@ class SGG(pl.LightningModule):
                 # "proj_k",  # key projection
                 # "final_sub_proj",  # keeps sub-object embeddings in sync
                 # "final_obj_proj",  # keeps object embeddings in sync
-                "rel_predictor_gate",  # tiny gate mlp, if you use it
+                # "rel_predictor_gate",  # tiny gate mlp, if you use it
             )
 
             for n, p in self.model.named_parameters():
@@ -930,20 +929,22 @@ if __name__ == "__main__":
         rel_categories=rel_categories,
         freq=1,
     )
+
     class SaveConfigCallback(Callback):
         def __init__(self, config_path, log_dir):
             self.config_path = config_path
             self.log_dir = log_dir
-            
+
         def on_train_start(self, trainer, pl_module):
             # Only save on rank 0 to avoid race conditions in DDP
             if trainer.global_rank == 0:
                 config_dest = Path(self.log_dir) / "config_train.yaml"
                 shutil.copy2(self.config_path, config_dest)
                 print(f"Saved config to: {config_dest}")
+
     config_callback = SaveConfigCallback(
         config_path="./config_train.yaml",  # Update with your config path
-        log_dir=tensorboard_logger.log_dir
+        log_dir=tensorboard_logger.log_dir,
     )
     # Train
     trainer = None
@@ -967,7 +968,7 @@ if __name__ == "__main__":
                     checkpoint_callback,
                     early_stop_callback,
                     lr_monitor_callback,
-                    config_callback
+                    config_callback,
                 ],
                 accumulate_grad_batches=args.accumulate,
             )

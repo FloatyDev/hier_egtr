@@ -28,12 +28,12 @@ max_epochs: 50
 max_epochs_finetune: 25
 lr_backbone: 2.0e-7
 lr: 2.0e-6
-lr_initialized: 2.0e-4
+lr_initialized: 8.0e-6
 weight_decay: 1.0e-4
 gradient_clip_val: 0.1
 debug: false
 resume: true
-memo: ""
+memo: "freq_bias_training__rtx5080"
 version: 0
 patience: 15
 finetune: true
@@ -41,7 +41,7 @@ filter_duplicate_rels: true
 filter_multiple_rels: true
 use_freq_bias: true
 use_log_softmax: false
-use_class_context: true
+use_class_context: false
 load_model: ./results/egtr__pretrained_detr__SenseTime__deformable-detr__batch__32__epochs__150_50__lr__1e-05_0.0001__visual_genome__finetune__version_0/batch__4__epochs__50_25__lr_bbone__2e-07__lr2e-06__lr_init1e-06__uniformly_balanced_superprob__hier__train_rel_head/version_0/
 
 # Evaluation
