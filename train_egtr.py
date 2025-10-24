@@ -716,8 +716,6 @@ if __name__ == "__main__":
 
     args = parse_args()
 
-    wandb.init(config=args)
-
     if args.from_scratch:
         args.pretrained = args.architecture
 
@@ -850,6 +848,7 @@ if __name__ == "__main__":
     else:
         version = None  #  If version is not specified the logger inspects the save directory for existing versions, then automatically assigns the next available version.
 
+    wandb.init(config=args, name=name)
     # Trainer setting
     tensorboard_logger = TensorBoardLogger(save_dir, name=name, version=version)
 
