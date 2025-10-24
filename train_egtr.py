@@ -857,7 +857,6 @@ if __name__ == "__main__":
     wandb_logger = WandbLogger(
         project="hier-egtr", log_model=False, save_dir="./logs", name=name
     )
-    ipdb.set_trace()
     logger_list = [tensorboard_logger, wandb_logger]
     if os.path.exists(f"{tensorboard_logger.log_dir}/checkpoints"):
         if os.path.exists(f"{tensorboard_logger.log_dir}/checkpoints/last.ckpt"):
