@@ -13,7 +13,7 @@ metric:
   name: validation_loss
 name: lr_search_train_head
 parameters:
-  lr_init:
+  lr_initialize:
     distribution: log_uniform_values
     max: 0.0001
     min: 1e-05
