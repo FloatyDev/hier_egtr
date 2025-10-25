@@ -11,15 +11,16 @@ method: bayes
 metric:
   goal: minimize
   name: validation_loss
-name: lr_search_train_head
+name: lr_search_train_head_freq_bias
 parameters:
   lr_initialize:
     distribution: log_uniform_values
-    max: 0.0001
+    max: 5e-03
     min: 1e-05
   max_epochs:
     value: 3
   patience:
     value: 2
 program: train_egtr.py
+project: hier-egtr_sweeps
 
