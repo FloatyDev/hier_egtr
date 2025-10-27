@@ -1,0 +1,26 @@
+command:
+- ${env}
+- python3
+- ${program}
+- --config=config_train.yaml
+- ${args}
+early_terminate:
+  min_iter: 1
+  type: hyperband
+method: bayes
+metric:
+  goal: minimize
+  name: validation_loss
+name: lr_search_train_head_uniform_weight_sgd
+parameters:
+  lr_initialize:
+    distribution: log_uniform_values
+    min: 2e-04
+    max: 8e-04
+  max_epochs:
+    value: 4
+  patience:
+    value: 2
+program: train_egtr.py
+project: hier-egtr_sweeps
+
