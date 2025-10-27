@@ -85,7 +85,6 @@ def evaluate_batch(
     for j, target in enumerate(targets):
         # Pred
         if hierarchical:
-            ipdb.set_trace()
             geo, poss, sem, super, _ = outputs["pred_rel"]
             geo = geo[0].exp()
             poss = poss[0].exp()
@@ -592,8 +591,12 @@ class SGG(pl.LightningModule):
                     "lr": self.lr_initialized,
                 }
             )
-        optimizer = torch.optim.AdamW(
-            param_dicts, lr=self.lr, weight_decay=self.weight_decay
+        print("--- Using SGD Optimizer ---")
+        optimizer = torch.optim.SGD(
+            param_dicts,
+            lr=self.lr,
+            momentum=0.9,
+            weight_decay=self.weight_decay
         )
         return optimizer
 
@@ -853,7 +856,6 @@ if __name__ == "__main__":
     wandb_logger = WandbLogger(
         project="hier-egtr", log_model=False, save_dir="./logs", name=name
     )
-    ipdb.set_trace()
     logger_list = [tensorboard_logger, wandb_logger]
     if os.path.exists(f"{tensorboard_logger.log_dir}/checkpoints"):
         if os.path.exists(f"{tensorboard_logger.log_dir}/checkpoints/last.ckpt"):
