@@ -21,6 +21,7 @@ from lib.evaluation.sg_eval import (
 from model.deformable_detr import DeformableDetrConfig, DeformableDetrFeatureExtractor
 from model.egtr import DetrForSceneGraphGeneration
 from train_egtr import collate_fn, evaluate_batch
+from model.util import get_orig2idx, get_super_rel_map
 
 
 @torch.no_grad()
@@ -47,6 +48,7 @@ def evaluate(
     oi_evaluator=None,
     coco_evaluator=None,
     feature_extractor=None,
+    hierarchical= False
 ):
     metric_dict = {}
     model.eval()
@@ -73,16 +75,31 @@ def evaluate(
             output_hidden_states=True,
         )
         targets = batch["labels"]
-        evaluate_batch(
-            outputs,
-            targets,
-            multiple_sgg_evaluator,
-            multiple_sgg_evaluator_list,
-            single_sgg_evaluator,
-            single_sgg_evaluator_list,
-            oi_evaluator,
-            num_labels,
-        )
+        if hierarchical:
+            evaluate_batch(
+                outputs,
+                targets,
+                multiple_sgg_evaluator,
+                multiple_sgg_evaluator_list,
+                single_sgg_evaluator,
+                single_sgg_evaluator_list,
+                oi_evaluator,
+                num_labels,
+            )
+        else:
+            evaluate_batch(
+                outputs,
+                targets,
+                multiple_sgg_evaluator,
+                multiple_sgg_evaluator_list,
+                single_sgg_evaluator,
+                single_sgg_evaluator_list,
+                oi_evaluator,
+                num_labels,
+                hierarchical = True,
+                orig2fam=get_super_rel_map,
+                orig2famidx=get_orig2idx,
+            )
         if coco_evaluator is not None:
             orig_target_sizes = torch.stack(
                 [target["orig_size"] for target in targets], dim=0
@@ -237,7 +254,9 @@ if __name__ == "__main__":
     if args.ckpt:
         ckpt_to_load = args.ckpt
     else:
-        assert args.artifact_path, "--artifact_path is required when a ckpt_path is not given explicitely"
+        assert (
+            args.artifact_path
+        ), "--artifact_path is required when a ckpt_path is not given explicitely"
         ckpt_to_load = sorted(
             glob(f"{args.artifact_path}/checkpoints/epoch=*.ckpt"),
             key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
@@ -268,6 +287,7 @@ if __name__ == "__main__":
             oi_evaluator,
             coco_evaluator,
             feature_extractor,
+            hierarchical= args.hier
         )
 
         # Save eval metric
