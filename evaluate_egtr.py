@@ -188,6 +188,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_workers", type=int, default=4)
     # Hierarchical
     parser.add_argument("--hier", type=str2bool, default=False)
+    parser.add_argument("--use_class_context", type=str2bool, default=False)
     args, unknown = parser.parse_known_args()  # to ignore args when training
 
     # Feature extractor
@@ -246,6 +247,7 @@ if __name__ == "__main__":
     config.logit_adjustment = args.logit_adjustment
     config.logit_adj_tau = args.logit_adj_tau
     config.hierarchical = args.hier
+    config.use_class_context = args.use_class_context
 
     model = DetrForSceneGraphGeneration.from_pretrained(
         args.architecture, config=config, ignore_mismatched_sizes=True
