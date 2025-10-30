@@ -89,6 +89,8 @@ def evaluate(
                 single_sgg_evaluator_list,
                 oi_evaluator,
                 num_labels,
+                hierarchical=True,
+                orig2famidx=get_orig2idx()[0],
             )
         else:
             evaluate_batch(
@@ -100,9 +102,6 @@ def evaluate(
                 single_sgg_evaluator_list,
                 oi_evaluator,
                 num_labels,
-                hierarchical = True,
-                orig2fam=get_super_rel_map(),
-                orig2famidx=get_orig2idx()[0],
             )
         if coco_evaluator is not None:
             orig_target_sizes = torch.stack(
