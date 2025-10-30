@@ -90,6 +90,7 @@ def evaluate(
                 oi_evaluator,
                 num_labels,
                 hierarchical=True,
+                orig2fam= get_super_rel_map()
                 orig2famidx=get_orig2idx()[0],
             )
         else:
