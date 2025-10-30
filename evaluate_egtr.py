@@ -97,8 +97,8 @@ def evaluate(
                 oi_evaluator,
                 num_labels,
                 hierarchical = True,
-                orig2fam=get_super_rel_map,
-                orig2famidx=get_orig2idx,
+                orig2fam=get_super_rel_map(),
+                orig2famidx=get_orig2idx()[0],
             )
         if coco_evaluator is not None:
             orig_target_sizes = torch.stack(
@@ -187,7 +187,7 @@ if __name__ == "__main__":
     # Speed up
     parser.add_argument("--num_workers", type=int, default=4)
     # Hierarchical
-    parser.add_argument("--hier", type=bool, default=False)
+    parser.add_argument("--hier", type=str2bool, default=False)
     args, unknown = parser.parse_known_args()  # to ignore args when training
 
     # Feature extractor
@@ -282,11 +282,11 @@ if __name__ == "__main__":
             model,
             test_dataloader,
             max(id2label.keys()) + 1,
-            multiple_sgg_evaluator,
-            single_sgg_evaluator,
-            oi_evaluator,
-            coco_evaluator,
-            feature_extractor,
+            multiple_sgg_evaluator = multiple_sgg_evaluator,
+            single_sgg_evaluator= single_sgg_evaluator,
+            oi_evaluator= oi_evaluator,
+            coco_evaluator=coco_evaluator,
+            feature_extractor=feature_extractor,
             hierarchical= args.hier
         )
 
