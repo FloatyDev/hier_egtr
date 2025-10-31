@@ -85,7 +85,6 @@ def evaluate_batch(
     for j, target in enumerate(targets):
         # Pred
         if hierarchical:
-            ipdb.set_trace()
             geo, poss, sem, super, _ = outputs["pred_rel"]
             geo = geo[0].exp()
             poss = poss[0].exp()
@@ -337,13 +336,25 @@ class SGG(pl.LightningModule):
             if not main_trained:
                 # load trained egtr weights for main training
                 assert artifact_path, "have to give artifact_path"
+                print(f"Loading checkpoint config from: {artifact_path}")
+
+                try:
+                    ckpt_config = DeformableDetrConfig.from_pretrained(artifact_path)
+                    ckpt_is_hierarchical = ckpt_config.hierarchical
+                    print(f"Checkpoint config loaded. Checkpoint is hierarchical: {ckpt_is_hierarchical}")
+                except Exception as e:
+                    print(f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}")
+                    ckpt_is_hierarchical = False
+                    assert 0
+
                 ckpt_path = sorted(
                     glob(f"{args.artifact_path}/checkpoints/epoch=*.ckpt"),
                     key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
                 )[-1]
                 state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
+
                 for k in list(state_dict.keys()):
-                    if k.startswith("model.rel_predictor."):
+                    if k.startswith("model.rel_predictor.") and not ckpt_is_hierarchical:
                         print(f"----deleting {k}")
                         del state_dict[k]
                     else:
@@ -366,7 +377,7 @@ class SGG(pl.LightningModule):
                 # "proj_k",  # key projection
                 # "final_sub_proj",  # keeps sub-object embeddings in sync
                 # "final_obj_proj",  # keeps object embeddings in sync
-                "rel_predictor_gate",  # tiny gate mlp, if you use it
+                #"rel_predictor_gate",  # tiny gate mlp, if you use it
             )
 
             for n, p in self.model.named_parameters():
@@ -853,7 +864,6 @@ if __name__ == "__main__":
     wandb_logger = WandbLogger(
         project="hier-egtr", log_model=False, save_dir="./logs", name=name
     )
-    ipdb.set_trace()
     logger_list = [tensorboard_logger, wandb_logger]
     if os.path.exists(f"{tensorboard_logger.log_dir}/checkpoints"):
         if os.path.exists(f"{tensorboard_logger.log_dir}/checkpoints/last.ckpt"):
