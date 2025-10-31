@@ -79,9 +79,13 @@ def evaluate_batch(
     num_labels,
     max_topk=100,
     hierarchical=True,
-    orig2fam=None,
-    orig2famidx=None,
+    partition_data=None
 ):
+    if hierarchical:
+        assert partition_data is not None, "Hier Evaluation needs partition_data"
+        orig2fam = partition_data["super_rel_map"]
+        orig2famidx = partition_data["orig2idx"]
+
     for j, target in enumerate(targets):
         # Pred
         if hierarchical:
@@ -273,6 +277,7 @@ class SGG(pl.LightningModule):
         train_relation_head=False,
         artifact_path="",
         use_class_context=False,
+        partition_data=None,
     ):
 
         super().__init__()
@@ -311,10 +316,11 @@ class SGG(pl.LightningModule):
         config.use_class_context = use_class_context
 
         self.config = config
+        self.partition_data = partition_data
 
         if config.from_scratch:
             assert backbone_dirpath
-            self.model = DetrForSceneGraphGeneration(config=config, fg_matrix=fg_matrix)
+            self.model = DetrForSceneGraphGeneration(config=config, fg_matrix=fg_matrix,partition_data=self.partition_data)
             self.model.model.backbone.load_state_dict(
                 torch.load(f"{backbone_dirpath}/{config.backbone}.pt")
             )
@@ -327,6 +333,7 @@ class SGG(pl.LightningModule):
                 ignore_mismatched_sizes=True,
                 output_loading_info=True,
                 fg_matrix=fg_matrix,
+                partition_data=self.partition_data
             )
             self.initialized_keys = load_info["missing_keys"] + [
                 _key for _key, _, _ in load_info["mismatched_keys"]
@@ -341,9 +348,13 @@ class SGG(pl.LightningModule):
                 try:
                     ckpt_config = DeformableDetrConfig.from_pretrained(artifact_path)
                     ckpt_is_hierarchical = ckpt_config.hierarchical
-                    print(f"Checkpoint config loaded. Checkpoint is hierarchical: {ckpt_is_hierarchical}")
+                    print(
+                        f"Checkpoint config loaded. Checkpoint is hierarchical: {ckpt_is_hierarchical}"
+                    )
                 except Exception as e:
-                    print(f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}")
+                    print(
+                        f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}"
+                    )
                     ckpt_is_hierarchical = False
                     assert 0
 
@@ -354,7 +365,10 @@ class SGG(pl.LightningModule):
                 state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
 
                 for k in list(state_dict.keys()):
-                    if k.startswith("model.rel_predictor.") and not ckpt_is_hierarchical:
+                    if (
+                        k.startswith("model.rel_predictor.")
+                        and not ckpt_is_hierarchical
+                    ):
                         print(f"----deleting {k}")
                         del state_dict[k]
                     else:
@@ -377,7 +391,7 @@ class SGG(pl.LightningModule):
                 # "proj_k",  # key projection
                 # "final_sub_proj",  # keeps sub-object embeddings in sync
                 # "final_obj_proj",  # keeps object embeddings in sync
-                #"rel_predictor_gate",  # tiny gate mlp, if you use it
+                # "rel_predictor_gate",  # tiny gate mlp, if you use it
             )
 
             for n, p in self.model.named_parameters():
@@ -626,6 +640,40 @@ def str2bool(v):
         raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
+def generate_partition_data(seed, num_total=50, num_geo=15, num_poss=11, num_sem=24):
+    print(f"Generating random partition with seed {seed}")
+    assert num_geo + num_poss + num_sem == num_total, "Partition sizes don't match"
+
+    predicate_ids = list(range(num_total))
+    rng = np.random.default_rng(seed)
+    rng.shuffle(predicate_ids)
+
+    geo_preds = sorted(predicate_ids[:num_geo])
+    poss_preds = sorted(predicate_ids[num_geo : num_geo + num_poss])
+    sem_preds = sorted(predicate_ids[num_geo + num_poss :])
+
+    super_rel_map = [0] * num_total
+    orig2idx = [0] * num_total
+
+    for i, pred_id in enumerate(geo_preds):
+        super_rel_map[pred_id] = 0
+        orig2idx[pred_id] = i
+    for i, pred_id in enumerate(poss_preds):
+        super_rel_map[pred_id] = 1
+        orig2idx[pred_id] = i
+    for i, pred_id in enumerate(sem_preds):
+        super_rel_map[pred_id] = 2
+        orig2idx[pred_id] = i
+
+    return {
+        "super_rel_map": super_rel_map,
+        "orig2idx": torch.tensor(orig2idx, dtype=torch.long),
+        "num_geo": num_geo,
+        "num_poss": num_poss,
+        "num_sem": num_sem,
+    }
+
+
 def build_parser(parser):
     # Your existing args
     parser.add_argument("--data_path", type=str, default="dataset/visual_genome")
@@ -692,6 +740,13 @@ def build_parser(parser):
     parser.add_argument("--artifact_path", type=str, default="")
     parser.add_argument("--load_model", type=str, default="")
     parser.add_argument("--use_class_context", type=str2bool, default=False)
+    parser.add_argument(
+        "--random_partition_seed",
+        type=int,
+        default=None,
+        help="Seed for random partition generation. "
+        "If None, uses the default manual partition.",
+    )
 
     return parser
 
@@ -725,6 +780,26 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+
+    if args.random_partition_seed is not None:
+        partition_data = generate_partition_data(
+            seed=args.random_partition_seed,
+            num_total=50,  # Assuming 50 total predicates for VG
+            num_geo=args.num_geometric,
+            num_poss=args.num_possessive,
+            num_sem=args.num_semantic,
+        )
+    else:
+        # Load the default manual partition
+        print("Using default manual partition from model.util")
+        orig2famidx, num_geo, num_poss, num_sem = get_orig2idx()
+        partition_data = {
+            "super_rel_map": get_super_rel_map(),
+            "orig2idx": orig2famidx,
+            "num_geo": num_geo,
+            "num_poss": num_poss,
+            "num_sem": num_sem,
+        }
     if args.from_scratch:
         args.pretrained = args.architecture
 
@@ -921,6 +996,7 @@ if __name__ == "__main__":
         train_relation_head=args.train_head,
         artifact_path=args.artifact_path,
         use_class_context=args.use_class_context,
+        partition_data=partition_data
     )
 
     # Callback
@@ -940,20 +1016,22 @@ if __name__ == "__main__":
         rel_categories=rel_categories,
         freq=1,
     )
+
     class SaveConfigCallback(Callback):
         def __init__(self, config_path, log_dir):
             self.config_path = config_path
             self.log_dir = log_dir
-            
+
         def on_train_start(self, trainer, pl_module):
             # Only save on rank 0 to avoid race conditions in DDP
             if trainer.global_rank == 0:
                 config_dest = Path(self.log_dir) / "config_train.yaml"
                 shutil.copy2(self.config_path, config_dest)
                 print(f"Saved config to: {config_dest}")
+
     config_callback = SaveConfigCallback(
         config_path="./config_train.yaml",  # Update with your config path
-        log_dir=tensorboard_logger.log_dir
+        log_dir=tensorboard_logger.log_dir,
     )
     # Train
     trainer = None
@@ -977,7 +1055,7 @@ if __name__ == "__main__":
                     checkpoint_callback,
                     early_stop_callback,
                     lr_monitor_callback,
-                    config_callback
+                    config_callback,
                 ],
                 accumulate_grad_batches=args.accumulate,
             )
@@ -1053,6 +1131,7 @@ if __name__ == "__main__":
                 super_weight=args.super_weight,
                 train_relation_head=args.train_head,
                 use_class_context=args.use_class_context,
+                partition_data=partition_data
             )
 
             # Finetune callback

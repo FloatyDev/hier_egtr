@@ -231,7 +231,7 @@ class BayesianRelationClassifier(nn.Module):
 
 
 class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
-    def __init__(self, config, **kwargs):
+    def __init__(self, config, partition_data=None, **kwargs):
         super(DetrForSceneGraphGeneration, self).__init__(config)
         self.model = DeformableDetrModel(config)
 
@@ -346,6 +346,7 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
             output_dim=1,
             num_layers=3,
         )
+        self.partition_data = partition_data
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -576,6 +577,7 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
                 hierarchical=self.config.hierarchical,
                 super_weight=self.config.super_weight,
                 fg_matrix=self.fg_matrix,
+                partition_data=self.partition_data,
             )
 
             criterion.to(self.device)
@@ -702,6 +704,7 @@ class SceneGraphGenerationLoss(nn.Module):
         fg_matrix,
         hierarchical=False,
         super_weight=1.0,  # weight of super relation at general rel loss sum
+        partition_data=None,
     ):
         """
         Create the criterion.
@@ -733,7 +736,6 @@ class SceneGraphGenerationLoss(nn.Module):
         self.focal_alpha = focal_alpha
         self.rel_sample_negatives_largest = rel_sample_negatives_largest
         self.rel_sample_nonmatching_largest = rel_sample_nonmatching_largest
-        self.super_relation_map = get_super_rel_map()
         self.nonmatching_cost = (
             -torch.log(torch.tensor(1e-8)) * matcher.class_cost
             + 4 * matcher.bbox_cost
@@ -743,14 +745,33 @@ class SceneGraphGenerationLoss(nn.Module):
 
         self.hierarchical = hierarchical
 
+        if self.hierarchical:
+            if partition_data is None:
+                print(
+                    "WARNING: Hierarchical loss using default partition from model.util"
+                )
+                from model.util import get_super_rel_map, get_orig2idx
+
+                self.super_relation_map = get_super_rel_map()
+                orig2famidx, num_geo, num_poss, num_sem = get_orig2idx()
+            else:
+                self.super_relation_map = partition_data["super_rel_map"]
+                orig2famidx = partition_data["orig2idx"]
+                num_geo = partition_data["num_geo"]
+                num_poss = partition_data["num_poss"]
+                num_sem = partition_data["num_sem"]
+        else:
+            # Still need to define this for the non-hierarchical case if it's used
+            from model.util import get_super_rel_map
+
+            self.super_relation_map = get_super_rel_map()
+
         if hierarchical:
             # Use NLLLoss for each relationship category
             self.geo_loss = nn.NLLLoss(reduction="none")
             self.poss_loss = nn.NLLLoss(reduction="none")
             self.sem_loss = nn.NLLLoss(reduction="none")
             self.super_loss = nn.NLLLoss(reduction="none")
-
-            orig2famidx, num_geo, num_poss, num_sem = get_orig2idx()
 
             self.register_buffer(
                 "orig2fam",
