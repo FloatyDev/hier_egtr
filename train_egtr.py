@@ -342,13 +342,25 @@ class SGG(pl.LightningModule):
             if not main_trained:
                 # load trained egtr weights for main training
                 assert artifact_path, "have to give artifact_path"
+                print(f"Loading checkpoint config from: {artifact_path}")
+
+                try:
+                    ckpt_config = DeformableDetrConfig.from_pretrained(artifact_path)
+                    ckpt_is_hierarchical = ckpt_config.hierarchical
+                    print(f"Checkpoint config loaded. Checkpoint is hierarchical: {ckpt_is_hierarchical}")
+                except Exception as e:
+                    print(f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}")
+                    ckpt_is_hierarchical = False
+                    assert 0
+
                 ckpt_path = sorted(
                     glob(f"{args.artifact_path}/checkpoints/epoch=*.ckpt"),
                     key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
                 )[-1]
                 state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
+
                 for k in list(state_dict.keys()):
-                    if k.startswith("model.rel_predictor."):
+                    if k.startswith("model.rel_predictor.") and not ckpt_is_hierarchical:
                         print(f"----deleting {k}")
                         del state_dict[k]
                     else:
