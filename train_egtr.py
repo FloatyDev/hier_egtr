@@ -82,9 +82,12 @@ def evaluate_batch(
     partition_data=None
 ):
     if hierarchical:
-        assert partition_data is not None, "Hier Evaluation needs partition_data"
-        orig2fam = partition_data["super_rel_map"]
-        orig2famidx = partition_data["orig2idx"]
+        if partition_data is not None:
+            orig2fam = partition_data["super_rel_map"]
+            orig2famidx = partition_data["orig2idx"]
+        else:
+            orig2fam = get_super_rel_map()
+            orig2famidx = get_orig2idx()[0]
 
     for j, target in enumerate(targets):
         # Pred
