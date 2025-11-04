@@ -5,10 +5,12 @@ import shutil
 import os
 import subprocess
 import re
-CONFIG_FILE = "config_train.yaml" # Your main config file
-RESULTS_DIR = "random_partition_results" # Top-level dir for all runs
-N_ITERATIONS = 10  # Set to a feasible number (e.g., 5 or 10)
-KEY_METRIC = "mR@50" # The metric you want to compare from the JSON
+
+CONFIG_FILE = "config_train.yaml" 
+RESULTS_DIR = "random_partition_results"  
+N_ITERATIONS = 5
+KEY_METRIC = "(single)mR@50" 
+
 
 def parse_metric_from_log_dir(log_dir, key_metric):
     """
@@ -19,13 +21,15 @@ def parse_metric_from_log_dir(log_dir, key_metric):
         all_metric_files = glob.glob(glob_pattern, recursive=True)
 
         if not all_metric_files:
-            print(f"  Warning: No metric JSON (matching '{glob_pattern}') found in {log_dir}")
+            print(
+                f"  Warning: No metric JSON (matching '{glob_pattern}') found in {log_dir}"
+            )
             return None
 
         metric_file_path = all_metric_files[0]
         print(f"  Found metric file: {metric_file_path}")
 
-        with open(metric_file_path, 'r') as f:
+        with open(metric_file_path, "r") as f:
             metrics = json.load(f)
 
         if isinstance(metrics, list):
@@ -43,6 +47,7 @@ def parse_metric_from_log_dir(log_dir, key_metric):
         print(f"  Error parsing metrics from {log_dir}: {e}")
         return None
 
+
 def run_training_experiment(seed, output_path, config_file):
     """
     Runs a single training experiment using subprocess.
@@ -54,12 +59,15 @@ def run_training_experiment(seed, output_path, config_file):
 
     # Build the command
     cmd = [
-        "python", "train_egtr.py",
-        "--config", config_file,
-        "--output_path", output_path,
+        "python",
+        "train_egtr.py",
+        "--config",
+        config_file,
+        "--output_path",
+        output_path,
         "--resume=False",
         "--skip_train=False",
-        "--eval_when_train_end=True"
+        "--eval_when_train_end=True",
     ]
 
     # Add the seed argument only if it's for a random partition
@@ -85,6 +93,7 @@ def run_training_experiment(seed, output_path, config_file):
         print(f"  An unexpected error occurred: {e}")
         return None
 
+
 def main():
     """
     Main experiment runner.
@@ -94,9 +103,7 @@ def main():
     # 1. Run the manual partition (seed=None)
     manual_output_path = os.path.join(RESULTS_DIR, "run_manual")
     manual_score = run_training_experiment(
-        seed=None,
-        output_path=manual_output_path,
-        config_file=CONFIG_FILE
+        seed=None, output_path=manual_output_path, config_file=CONFIG_FILE
     )
 
     if manual_score is None:
@@ -110,9 +117,7 @@ def main():
         print(f"--- STARTING RANDOM RUN {i+1}/{N_ITERATIONS} ---")
         random_output_path = os.path.join(RESULTS_DIR, f"run_seed_{i}")
         score = run_training_experiment(
-            seed=i,
-            output_path=random_output_path,
-            config_file=CONFIG_FILE
+            seed=i, output_path=random_output_path, config_file=CONFIG_FILE
         )
 
         if score is not None:
@@ -132,6 +137,7 @@ def main():
 
     else:
         print("No successful random runs to compare against.")
+
 
 if __name__ == "__main__":
     main()
