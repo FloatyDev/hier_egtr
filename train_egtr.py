@@ -79,7 +79,7 @@ def evaluate_batch(
     num_labels,
     max_topk=100,
     hierarchical=True,
-    partition_data=None
+    partition_data=None,
 ):
     if hierarchical:
         if partition_data is not None:
@@ -323,7 +323,9 @@ class SGG(pl.LightningModule):
 
         if config.from_scratch:
             assert backbone_dirpath
-            self.model = DetrForSceneGraphGeneration(config=config, fg_matrix=fg_matrix,partition_data=self.partition_data)
+            self.model = DetrForSceneGraphGeneration(
+                config=config, fg_matrix=fg_matrix, partition_data=self.partition_data
+            )
             self.model.model.backbone.load_state_dict(
                 torch.load(f"{backbone_dirpath}/{config.backbone}.pt")
             )
@@ -336,7 +338,7 @@ class SGG(pl.LightningModule):
                 ignore_mismatched_sizes=True,
                 output_loading_info=True,
                 fg_matrix=fg_matrix,
-                partition_data=self.partition_data
+                partition_data=self.partition_data,
             )
             self.initialized_keys = load_info["missing_keys"] + [
                 _key for _key, _, _ in load_info["mismatched_keys"]
@@ -522,8 +524,7 @@ class SGG(pl.LightningModule):
                 self.oi_evaluator,
                 self.config.num_labels,
                 hierarchical=self.config.hierarchical,
-                orig2fam=get_super_rel_map(),
-                orig2famidx=get_orig2idx()[0],
+                partition_data=self.partition_data,
             )
             # eval OD
             if self.coco_evaluator is not None:
@@ -993,7 +994,7 @@ if __name__ == "__main__":
         train_relation_head=args.train_head,
         artifact_path=args.artifact_path,
         use_class_context=args.use_class_context,
-        partition_data=partition_data
+        partition_data=partition_data,
     )
 
     # Callback
@@ -1128,7 +1129,7 @@ if __name__ == "__main__":
                 super_weight=args.super_weight,
                 train_relation_head=args.train_head,
                 use_class_context=args.use_class_context,
-                partition_data=partition_data
+                partition_data=partition_data,
             )
 
             # Finetune callback
