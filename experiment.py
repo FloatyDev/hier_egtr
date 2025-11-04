@@ -4,32 +4,25 @@ import numpy as np
 import shutil
 import os
 import subprocess
-
+import re
 CONFIG_FILE = "config_train.yaml" # Your main config file
 RESULTS_DIR = "random_partition_results" # Top-level dir for all runs
 N_ITERATIONS = 10  # Set to a feasible number (e.g., 5 or 10)
 KEY_METRIC = "mR@50" # The metric you want to compare from the JSON
 
 def parse_metric_from_log_dir(log_dir, key_metric):
+    """
+    Finds the final metric .json file in the log dir and parses it.
+    """
     try:
-        # 1. Search recursively for all .json files in the run's log dir.
-        glob_pattern = os.path.join(log_dir, "**", "*.json")
-        all_json_files = glob.glob(glob_pattern, recursive=True)
+        glob_pattern = os.path.join(log_dir, "**", "checkpoints", "*.json")
+        all_metric_files = glob.glob(glob_pattern, recursive=True)
 
-        if not all_json_files:
-            print(f"  Warning: No JSON files found in {log_dir}")
+        if not all_metric_files:
+            print(f"  Warning: No metric JSON (matching '{glob_pattern}') found in {log_dir}")
             return None
 
-        # 2. Filter out the saved config file.
-        metric_files = [
-            f for f in all_json_files if not f.endswith("config_train.yaml")
-        ]
-
-        if not metric_files:
-            print(f"  Warning: No metric JSON found (only config) in {log_dir}")
-            return None
-
-        metric_file_path = metric_files[0]
+        metric_file_path = all_metric_files[0]
         print(f"  Found metric file: {metric_file_path}")
 
         with open(metric_file_path, 'r') as f:
