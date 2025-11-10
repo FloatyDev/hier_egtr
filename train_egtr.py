@@ -347,7 +347,6 @@ class SGG(pl.LightningModule):
                 except Exception as e:
                     print(f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}")
                     ckpt_is_hierarchical = False
-                    assert 0
 
                 ckpt_path = sorted(
                     glob(f"{args.artifact_path}/checkpoints/epoch=*.ckpt"),
@@ -946,7 +945,7 @@ if __name__ == "__main__":
         def __init__(self, config_path, log_dir):
             self.config_path = config_path
             self.log_dir = log_dir
-            
+
         def on_train_start(self, trainer, pl_module):
             # Only save on rank 0 to avoid race conditions in DDP
             if trainer.global_rank == 0:
