@@ -347,9 +347,13 @@ class SGG(pl.LightningModule):
                 try:
                     ckpt_config = DeformableDetrConfig.from_pretrained(artifact_path)
                     ckpt_is_hierarchical = ckpt_config.hierarchical
-                    print(f"Checkpoint config loaded. Checkpoint is hierarchical: {ckpt_is_hierarchical}")
+                    print(
+                        f"Checkpoint config loaded. Checkpoint is hierarchical: {ckpt_is_hierarchical}"
+                    )
                 except Exception as e:
-                    print(f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}")
+                    print(
+                        f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}"
+                    )
                     ckpt_is_hierarchical = False
                     assert 0
 
@@ -360,7 +364,10 @@ class SGG(pl.LightningModule):
                 state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
 
                 for k in list(state_dict.keys()):
-                    if k.startswith("model.rel_predictor.") and not ckpt_is_hierarchical:
+                    if (
+                        k.startswith("model.rel_predictor.")
+                        and not ckpt_is_hierarchical
+                    ):
                         print(f"----deleting {k}")
                         del state_dict[k]
                     else:
@@ -383,7 +390,7 @@ class SGG(pl.LightningModule):
                 # "proj_k",  # key projection
                 # "final_sub_proj",  # keeps sub-object embeddings in sync
                 # "final_obj_proj",  # keeps object embeddings in sync
-                #"rel_predictor_gate",  # tiny gate mlp, if you use it
+                # "rel_predictor_gate",  # tiny gate mlp, if you use it
             )
 
             for n, p in self.model.named_parameters():
@@ -959,20 +966,39 @@ if __name__ == "__main__":
         rel_categories=rel_categories,
         freq=1,
     )
+
     class SaveConfigCallback(Callback):
-        def __init__(self, config_path, log_dir):
+        def __init__(self, config_path, log_dir, wandb_logger=None):
+            super().__init__()
             self.config_path = config_path
             self.log_dir = log_dir
-            
+            self.wandb_logger = wandb_logger  # Store the logger
+
         def on_train_start(self, trainer, pl_module):
-            # Only save on rank 0 to avoid race conditions in DDP
+            # Only save on rank 0
             if trainer.global_rank == 0:
                 config_dest = Path(self.log_dir) / "config_train.yaml"
-                shutil.copy2(self.config_path, config_dest)
-                print(f"Saved config to: {config_dest}")
+                if self.config_path and Path(self.config_path).exists():
+                    shutil.copy2(self.config_path, config_dest)
+                    print(f"Saved config locally to: {config_dest}")
+
+                    if self.wandb_logger:
+                        try:
+                            # self.wandb_logger.experiment is the wandb.Run object
+                            # .save() uploads the file to the run's file directory
+                            self.wandb_logger.experiment.save(self.config_path)
+                            print(f"Saved {self.config_path} to wandb cloud.")
+                        except Exception as e:
+                            print(f"Error saving config to wandb: {e}")
+                    else:
+                        print("WandbLogger not provided, config not saved to cloud.")
+                else:
+                    print(f"Config file not found at {self.config_path}, cannot save.")
+
     config_callback = SaveConfigCallback(
-        config_path="./config_train.yaml",  # Update with your config path
-        log_dir=tensorboard_logger.log_dir
+        config_path=args.config,
+        log_dir=tensorboard_logger.log_dir,
+        wandb_logger=wandb_logger,
     )
     # Train
     trainer = None
@@ -996,7 +1022,7 @@ if __name__ == "__main__":
                     checkpoint_callback,
                     early_stop_callback,
                     lr_monitor_callback,
-                    config_callback
+                    config_callback,
                 ],
                 accumulate_grad_batches=args.accumulate,
             )
