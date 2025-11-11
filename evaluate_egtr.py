@@ -7,6 +7,7 @@ import json
 from glob import glob
 
 import ipdb
+import wandb
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -195,6 +196,18 @@ if __name__ == "__main__":
     parser.add_argument("--use_class_context", type=str2bool, default=False)
     args, unknown = parser.parse_known_args()  # to ignore args when training
 
+    run_name = f"eval_{args.artifact_path.split('/')[-1]}_{args.split}"
+    if args.ckpt:
+        run_name += f"_ckpt_{args.ckpt.split('/')[-1]}"
+    if args.logit_adjustment:
+        run_name += f"_la_{args.logit_adj_tau}"
+
+    wandb.init(
+        project="hier_egtr_eval",
+        name=run_name,
+        config=args
+    )
+
     # Feature extractor
     feature_extractor = DeformableDetrFeatureExtractor.from_pretrained(
         args.architecture, size=args.min_size, max_size=args.max_size
@@ -296,6 +309,9 @@ if __name__ == "__main__":
             config.hierarchical,
         )
 
+        print("Logging metrics to wandb...")
+        wandb.log(metric)
+
         # Save eval metric
         device = "".join(torch.cuda.get_device_name(0).split()[1:2])
         filename = f'{ckpt_to_load.replace(".ckpt", "")}__{args.split}__{len(test_dataloader)}__{device}'
@@ -305,3 +321,4 @@ if __name__ == "__main__":
         with open(f"{filename}.json", "w") as f:
             json.dump(metric, f)
         print("metric is saved in", f"{filename}.json")
+        wandb.finish()
