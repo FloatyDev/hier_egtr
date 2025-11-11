@@ -196,9 +196,10 @@ if __name__ == "__main__":
     parser.add_argument("--use_class_context", type=str2bool, default=False)
     args, unknown = parser.parse_known_args()  # to ignore args when training
 
-    run_name = f"eval_{args.artifact_path.split('/')[-1]}_{args.split}"
-    if args.ckpt:
-        run_name += f"_ckpt_{args.ckpt.split('/')[-1]}"
+    experiment_name = args.artifact_path.split('/')[2]
+
+    run_name = f"eval_{experiment_name}_{args.split}"
+
     if args.logit_adjustment:
         run_name += f"_la_{args.logit_adj_tau}"
 
