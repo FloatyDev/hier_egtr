@@ -196,7 +196,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_class_context", type=str2bool, default=False)
     args, unknown = parser.parse_known_args()  # to ignore args when training
 
-    experiment_name = args.artifact_path.split('/')[-2]
+    experiment_name = args.artifact_path.split('/')[2]
 
     run_name = f"eval_{experiment_name}_{args.split}"
 
