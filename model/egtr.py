@@ -576,6 +576,7 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
                 hierarchical=self.config.hierarchical,
                 super_weight=self.config.super_weight,
                 fg_matrix=self.fg_matrix,
+                balancing=self.config.loss_balancing,
             )
 
             criterion.to(self.device)
@@ -701,6 +702,7 @@ class SceneGraphGenerationLoss(nn.Module):
         # Add hierarchical parameters
         fg_matrix,
         hierarchical=False,
+        balancing= "uniform",
         super_weight=1.0,  # weight of super relation at general rel loss sum
     ):
         """
@@ -776,10 +778,17 @@ class SceneGraphGenerationLoss(nn.Module):
                 mask_poss = fam_map == 1
                 mask_sem = fam_map == 2
 
-                w = class_balanced_weights(rel_counts, beta=0.9999)
-                w_geo = w[mask_geo]
-                w_poss = w[mask_poss]
-                w_sem = w[mask_sem]
+                if balancing=="uniform":
+                    w = class_balanced_weights(rel_counts, beta=0.9999)
+                    w_geo = w[mask_geo]
+                    w_poss = w[mask_poss]
+                    w_sem = w[mask_sem]
+                    print("use uniform balancing")
+                    assert(0)
+                else:
+                    w_geo = class_balanced_weights(rel_counts[mask_geo], beta=0.9999)
+                    w_poss = class_balanced_weights(rel_counts[mask_poss], beta=0.9999)
+                    w_sem = class_balanced_weights(rel_counts[mask_sem], beta=0.9999)
 
                 # Register as buffers so they move with .to(device) and save in checkpoints
                 self.register_buffer("w_geo", w_geo, persistent=True)
