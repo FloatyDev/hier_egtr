@@ -272,6 +272,7 @@ class SGG(pl.LightningModule):
         num_semantic,
         num_negatives,
         super_weight,
+        loss_balancing,
         train_relation_head=False,
         artifact_path="",
         use_class_context=False,
@@ -311,6 +312,7 @@ class SGG(pl.LightningModule):
         config.num_negatives = num_negatives
         config.super_weight = super_weight
         config.use_class_context = use_class_context
+        config.loss_balancing = loss_balancing
 
         self.config = config
 
@@ -700,6 +702,7 @@ def build_parser(parser):
     parser.add_argument("--artifact_path", type=str, default="")
     parser.add_argument("--load_model", type=str, default="")
     parser.add_argument("--use_class_context", type=str2bool, default=False)
+    parser.add_argument("--loss_balancing", type=str, default="uniform", choices=["uniform", "per_family"])
 
     return parser
 
@@ -929,6 +932,7 @@ if __name__ == "__main__":
         train_relation_head=args.train_head,
         artifact_path=args.artifact_path,
         use_class_context=args.use_class_context,
+        loss_balancing=args.loss_balancing
     )
 
     # Callback
