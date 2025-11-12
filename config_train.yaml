@@ -63,4 +63,5 @@ num_possessive: 11
 num_semantic: 24
 super_weight: 1
 train_head: true
-artifact_path: "artifacts/"
+loss_balancing: "per_family"
+artifact_path: "./results/best/batch__4__epochs__50_25__lr_bbone__2e-07__lr2e-06__lr_init1e-05__balanced_superprob_add_uniformwb__hier__train_rel_head/version_3/"
