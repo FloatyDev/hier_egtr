@@ -28,12 +28,12 @@ max_epochs: 50
 max_epochs_finetune: 25
 lr_backbone: 2.0e-7
 lr: 2.0e-6
-lr_initialized: 2.0e-4
+lr_initialized: 2.0e-5
 weight_decay: 1.0e-4
 gradient_clip_val: 0.1
 debug: false
 resume: true
-memo: ""
+memo: "smicro_sgd_nohs_uniformwb"
 version: 0
 patience: 15
 finetune: true
@@ -41,8 +41,8 @@ filter_duplicate_rels: true
 filter_multiple_rels: true
 use_freq_bias: true
 use_log_softmax: false
-use_class_context: true
-load_model: ./results/egtr__pretrained_detr__SenseTime__deformable-detr__batch__32__epochs__150_50__lr__1e-05_0.0001__visual_genome__finetune__version_0/batch__4__epochs__50_25__lr_bbone__2e-07__lr2e-06__lr_init1e-06__uniformly_balanced_superprob__hier__train_rel_head/version_0/
+use_class_context: false
+load_model: "./results/egtr__pretrained_detr__SenseTime__deformable-detr__batch__32__epochs__150_50__lr__1e-05_0.0001__visual_genome__finetune__version_0/batch__4__epochs__50_25__lr_bbone__2e-07__lr2e-06__lr_init1e-06__uniformly_balanced_superprob__hier__train_rel_head/version_0/"
 
 # Evaluation
 skip_train: false
@@ -64,4 +64,4 @@ num_semantic: 24
 num_negatives: 49
 super_weight: 1
 train_head: true
-artifact_path: "artifacts/"
+artifact_path: "artifacts/egtr__pretrained_detr__SenseTime__deformable-detr__batch__32__epochs__150_50__lr__1e-05_0.0001__visual_genome__finetune__version_0/batch__64__epochs__50_25__lr__2e-07_2e-06_0.0002__visual_genome__finetune/version_0/"
