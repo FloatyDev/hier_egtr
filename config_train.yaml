@@ -15,8 +15,8 @@ ce_loss_coefficient: 2.0
 rel_loss_coefficient: 15.0
 connectivity_loss_coefficient: 30.0
 smoothing: 1.0e-14
-rel_sample_negatives: 80
-rel_sample_nonmatching: 80
+rel_sample_negatives: 80 #None in code
+rel_sample_nonmatching: 80 #None in code
 rel_sample_negatives_largest: true
 rel_sample_nonmatching_largest: true
 
@@ -39,10 +39,10 @@ patience: 15
 finetune: true
 filter_duplicate_rels: true
 filter_multiple_rels: true
-use_freq_bias: true
+use_freq_bias: false
 use_log_softmax: false
 use_class_context: false
-load_model: "./results/egtr__pretrained_detr__SenseTime__deformable-detr__batch__32__epochs__150_50__lr__1e-05_0.0001__visual_genome__finetune__version_0/batch__4__epochs__50_25__lr_bbone__2e-07__lr2e-06__lr_init1e-06__uniformly_balanced_superprob__hier__train_rel_head/version_0/"
+load_model: ""
 
 # Evaluation
 skip_train: false
@@ -61,7 +61,6 @@ hierarchical: true
 num_geometric: 15
 num_possessive: 11
 num_semantic: 24
-num_negatives: 49
 super_weight: 1
 train_head: true
-artifact_path: "artifacts/egtr__pretrained_detr__SenseTime__deformable-detr__batch__32__epochs__150_50__lr__1e-05_0.0001__visual_genome__finetune__version_0/batch__64__epochs__50_25__lr__2e-07_2e-06_0.0002__visual_genome__finetune/version_0/"
+artifact_path: "artifacts/"
