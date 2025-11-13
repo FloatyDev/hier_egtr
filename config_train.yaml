@@ -15,8 +15,8 @@ ce_loss_coefficient: 2.0
 rel_loss_coefficient: 15.0
 connectivity_loss_coefficient: 30.0
 smoothing: 1.0e-14
-rel_sample_negatives: 80
-rel_sample_nonmatching: 80
+rel_sample_negatives: 80 #None in code
+rel_sample_nonmatching: 80 #None in code
 rel_sample_negatives_largest: true
 rel_sample_nonmatching_largest: true
 
