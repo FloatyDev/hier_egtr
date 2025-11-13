@@ -355,7 +355,6 @@ class SGG(pl.LightningModule):
                         f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}"
                     )
                     ckpt_is_hierarchical = False
-                    assert 0
 
                 ckpt_path = sorted(
                     glob(f"{args.artifact_path}/checkpoints/epoch=*.ckpt"),
