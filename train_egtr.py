@@ -1093,6 +1093,8 @@ if __name__ == "__main__":
                 super_weight=args.super_weight,
                 train_relation_head=args.train_head,
                 use_class_context=args.use_class_context,
+                loss_balancing=args.loss_balancing,
+                balancing_beta=args.balancing_beta,
             )
 
             # Finetune callback
