@@ -1203,6 +1203,7 @@ if __name__ == "__main__":
             state_dict[k[6:]] = state_dict.pop(k)  # "model."
         module.model.load_state_dict(state_dict)  # load best model
 
+        test_coco_evaluator=None
         # Eval
         trainer = Trainer(
             precision=args.precision,
@@ -1218,6 +1219,7 @@ if __name__ == "__main__":
                 split=args.split,
                 num_object_queries=args.num_queries,
             )
+            test_coco_evaluator = CocoEvaluator(test_dataset.coco, ["bbox"])
         else:
             test_dataset = OIDataset(
                 data_folder=args.data_path,
@@ -1233,6 +1235,10 @@ if __name__ == "__main__":
             num_workers=args.num_workers,
             persistent_workers=True,
         )
+
+        if test_coco_evaluator is not None:
+            module.coco_evaluator = test_coco_evaluator
+
         if trainer.is_global_zero:
             print("### Evaluation")
         metric = trainer.test(module, dataloaders=test_dataloader)
