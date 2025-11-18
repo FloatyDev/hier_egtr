@@ -15,8 +15,8 @@ ce_loss_coefficient: 2.0
 rel_loss_coefficient: 15.0
 connectivity_loss_coefficient: 30.0
 smoothing: 1.0e-14
-rel_sample_negatives: 80 #None in code
-rel_sample_nonmatching: 80 #None in code
+rel_sample_negatives: null
+rel_sample_nonmatching: null
 rel_sample_negatives_largest: true
 rel_sample_nonmatching_largest: true
 
@@ -24,11 +24,11 @@ rel_sample_nonmatching_largest: true
 batch_size: 4
 accumulate: 1
 gpus: 1
-max_epochs: 50
-max_epochs_finetune: 25
+max_epochs: 10
+max_epochs_finetune: 10
 lr_backbone: 2.0e-7
 lr: 2.0e-6
-lr_initialized: 2.0e-4
+lr_initialized: 1.0e-5
 weight_decay: 1.0e-4
 gradient_clip_val: 0.1
 debug: false
@@ -61,7 +61,6 @@ hierarchical: true
 num_geometric: 15
 num_possessive: 11
 num_semantic: 24
-num_negatives: 49
 super_weight: 1
 train_head: true
 loss_balancing: "uniform"

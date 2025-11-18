@@ -389,7 +389,7 @@ class SGG(pl.LightningModule):
                 # "proj_k",  # key projection
                 # "final_sub_proj",  # keeps sub-object embeddings in sync
                 # "final_obj_proj",  # keeps object embeddings in sync
-                # "rel_predictor_gate",  # tiny gate mlp, if you use it
+                "rel_predictor_gate",  # tiny gate mlp, if you use it
             )
 
             for n, p in self.model.named_parameters():
@@ -1026,7 +1026,6 @@ if __name__ == "__main__":
                 print("### Main training")
             if ckpt_path is not None:
                 print(f"### Resume training from {ckpt_path}")
-            module.model.train()
             trainer.fit(module, ckpt_path=ckpt_path)
 
             try:
@@ -1132,7 +1131,6 @@ if __name__ == "__main__":
             if trainer.is_global_zero:
                 print("### Finetune with smaller lr")
 
-            module.model.train()
             trainer.fit(module, ckpt_path=None)
 
         if trainer is not None:
