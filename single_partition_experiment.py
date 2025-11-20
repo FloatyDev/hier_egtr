@@ -66,7 +66,7 @@ def run_training_experiment(seed, output_path, config_file):
         output_path,
         "--resume=False",
         "--skip_train=False",
-        "--eval_when_train_end=False",
+        "--eval_when_train_end=True",
         "--random_partition_seed", str(seed)
     ]
 

@@ -24,7 +24,7 @@ rel_sample_nonmatching_largest: true
 batch_size: 4
 accumulate: 1
 gpus: 1
-max_epochs: 10
+max_epochs: 9
 max_epochs_finetune: 10
 lr_backbone: 2.0e-7
 lr: 2.0e-6
@@ -32,11 +32,11 @@ lr_initialized: 1.0e-5
 weight_decay: 1.0e-4
 gradient_clip_val: 0.1
 debug: false
-resume: true
+resume: false
 memo: "partition_experiment"
 version: 0
-patience: 2
-finetune: true
+patience: 15
+finetune: false
 filter_duplicate_rels: true
 filter_multiple_rels: true
 use_freq_bias: false
@@ -46,7 +46,7 @@ load_model: ""
 
 # Evaluation
 skip_train: false
-split: "val"  # choices: val, test
+split: "test"  # choices: val, test
 eval_batch_size: 1
 eval_when_train_end: true
 eval_single_preds: true
