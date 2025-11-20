@@ -40,6 +40,7 @@ from model.deformable_detr import (
     DeformableDetrFeatureExtractorWithAugmentorNoCrop,
 )
 from model.egtr import DetrForSceneGraphGeneration
+import matplotlib.pyplot as plt
 from util.box_ops import rescale_bboxes
 from util.misc import use_deterministic_algorithms
 from model.util import GTTripletVis, count_trainable, get_super_rel_map, get_orig2idx
@@ -47,6 +48,83 @@ from model.util import GTTripletVis, count_trainable, get_super_rel_map, get_ori
 seed_everything(42, workers=True)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 torch.set_float32_matmul_precision("medium")
+
+
+def plot_effective_signal(
+    fg_matrix, rel_categories, betas=[0.0, 0.99, 0.999, 0.9999, 0.99999]
+):
+    if isinstance(fg_matrix, torch.Tensor):
+        fg_matrix = fg_matrix.cpu().numpy()
+
+    counts = fg_matrix.sum(axis=(0, 1))
+    num_classes = len(counts)
+
+    sorted_indices = np.argsort(-counts)
+    sorted_counts = counts[sorted_indices]
+
+    def get_weights(counts, beta):
+        if beta == 0:
+            return np.ones_like(counts)
+        eff_num = 1.0 - np.power(beta, counts)
+        w = (1.0 - beta) / (eff_num + 1e-12)
+        w = w / w.mean()
+        return w
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5), dpi=120)
+
+    axes[0].bar(range(num_classes), sorted_counts, color="black", alpha=0.6, width=1.0)
+    axes[0].set_title(f"1. Dataset Imbalance (Zipfian)")
+    axes[0].set_xlabel("Relation Classes (Sorted by Freq)")
+    axes[0].set_ylabel("Number of Samples (log scale)")
+    axes[0].set_yscale("log")
+    axes[0].grid(True, which="both", ls="-", alpha=0.2)
+
+    for beta in betas:
+        if beta == 0:
+            continue
+        w = get_weights(sorted_counts, beta)
+        axes[1].plot(range(num_classes), w, label=f"$\\beta={beta}$", linewidth=2.5)
+
+    axes[1].set_title("2. Assigned Class Weights ($w_i$)")
+    axes[1].set_xlabel("Relation Classes")
+    axes[1].set_ylabel("Loss Weight")
+    axes[1].set_yscale("log")
+    axes[1].legend()
+    axes[1].grid(True, which="both", ls="-", alpha=0.2)
+
+    for beta in betas:
+        w = get_weights(sorted_counts, beta)
+        signal = sorted_counts * w
+
+        label = (
+            "Unbalanced ($\\beta=0$)" if beta == 0 else f"Balanced ($\\beta={beta}$)"
+        )
+        style = "--" if beta == 0 else "-"
+        axes[2].plot(
+            range(num_classes), signal, label=label, linestyle=style, linewidth=2.5
+        )
+
+    axes[2].set_title("3. Effective Gradient Signal ($N_i \\times w_i$)")
+    axes[2].set_xlabel("Relation Classes")
+    axes[2].set_ylabel("Total Signal Magnitude")
+    axes[2].set_yscale("log")
+    axes[2].legend()
+    axes[2].grid(True, which="both", ls="-", alpha=0.2)
+
+    axes[2].text(
+        num_classes // 2,
+        np.mean(sorted_counts * get_weights(sorted_counts, 0.9999)) * 1.5,
+        "Goal: Flat Line",
+        color="red",
+        fontsize=9,
+        ha="center",
+    )
+
+    plt.tight_layout()
+    filename = "class_balance_analysis_more_betas.png"
+    plt.savefig(filename)
+    print(f"Plot saved to {filename}")
+    plt.close()
 
 
 def build_flat_pred_rel(geo, poss, sem, orig2fam, orig2famidx):
