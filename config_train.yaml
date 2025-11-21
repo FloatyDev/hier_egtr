@@ -58,9 +58,6 @@ logit_adj_tau: 0.3
 num_workers: 4
 precision: 32  # choices: 16, 32
 hierarchical: true
-num_geometric: 15
-num_possessive: 11
-num_semantic: 24
 super_weight: 1
 train_head: true
 loss_balancing: "uniform"

@@ -773,10 +773,6 @@ def build_parser(parser):
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--precision", type=int, default=32, choices=[16, 32])
     parser.add_argument("--hierarchical", type=str2bool, default=False)
-    parser.add_argument("--num_geometric", type=int, default=15)
-    parser.add_argument("--num_possessive", type=int, default=11)
-    parser.add_argument("--num_semantic", type=int, default=24)
-    parser.add_argument("--num_negatives", type=int, default=49)
     parser.add_argument("--super_weight", type=int, default=1)
     parser.add_argument("--train_head", type=str2bool, default=False)
     parser.add_argument("--artifact_path", type=str, default="")
@@ -794,7 +790,6 @@ def build_parser(parser):
 
 
 def parse_args():
-    # 1) Parse only --config first (avoid required errors)
     config_parser = argparse.ArgumentParser(add_help=False)
     config_parser.add_argument("--config", type=str, default=None)
     config_args, _ = config_parser.parse_known_args()
@@ -834,6 +829,11 @@ if __name__ == "__main__":
             args.architecture, size=800, max_size=1333
         )
     )
+
+    _, n_geo, n_poss, n_sem = get_orig2idx()
+    args.num_geometric = n_geo
+    args.num_possessive = n_poss
+    args.num_semantic = n_sem
 
     # Dataset
     if "visual_genome" in args.data_path:
