@@ -387,7 +387,6 @@ class SGG(pl.LightningModule):
         config.num_geometric = num_geometric
         config.num_possessive = num_possessive
         config.num_semantic = num_semantic
-        config.num_negatives = num_negatives
         config.super_weight = super_weight
         config.use_class_context = use_class_context
         config.loss_balancing = loss_balancing
