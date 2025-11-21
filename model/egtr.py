@@ -332,7 +332,7 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
 
                 # Create a mask tensor: [0, 2, 1, 0, ...]
                 orig2fam = torch.tensor(get_super_rel_map(), dtype=torch.long)
-
+                fg_matrix_t = torch.as_tensor(fg_matrix, dtype=torch.float32)
                 # --- Helper Function to Create Conditional Priors ---
                 def get_conditional_prior(family_id):
                     # a. Mask: find which of the 50 relations belong to this family
@@ -340,7 +340,7 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
 
                     # b. Slice: Extract counts only for these relations
                     # Shape: [Num_Obj, Num_Obj, Num_Family_Rels]
-                    counts_slice = fg_matrix[:, :, mask]
+                    counts_slice = fg_matrix_t[:, :, mask]
 
                     # c. Normalize: Sum over THIS FAMILY's axis only
                     # This ensures sum(P(r|family)) = 1
