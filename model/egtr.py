@@ -172,8 +172,11 @@ class BayesianRelationClassifier(nn.Module):
 
     def forward(
         self,
-        features,  # gated_relation_source: (bsz, N, N, feat_dim)
-        det_logits,  # class logits: (bsz, N, num_classes)
+        features,  # gated_relation_source: (B, N, N, feat_dim)
+        det_logits,  # class logits: (B, N, num_classes)
+        subj_classes=None, # BxN
+        obj_classes=None,  # BxN
+        priors=None,
     ):
         B, N, _, D = features.shape
 
@@ -202,7 +205,27 @@ class BayesianRelationClassifier(nn.Module):
         # Compute outputs
         super_relation = F.log_softmax(self.fc5(hc), dim=-1)  # (bsz, N, N, 3)
 
-        # Compute hierarchical relationships
+        logit_geo  = self.fc3_1(hc) / self.T1
+        logit_poss = self.fc3_2(hc) / self.T2
+        logit_sem  = self.fc3_3(hc) / self.T3
+
+        if priors is not None and subj_classes is not None:
+            prior_geo, prior_poss, prior_sem = priors
+
+            # Expand class indices to pairwise shape [B, N, N],
+            s_idx = subj_classes.unsqueeze(2).expand(B, N, N) 
+            o_idx = obj_classes.unsqueeze(1).expand(B, N, N)
+
+            # result shape will be [B, n, n, num_relations_in_family]
+
+            bias_geo = prior_geo[s_idx, o_idx]
+            bias_poss = prior_poss[s_idx, o_idx]
+            bias_sem = prior_sem[s_idx, o_idx]
+
+            logit_geo  = logit_geo  + bias_geo
+            logit_poss = logit_poss + bias_poss
+            logit_sem  = logit_sem  + bias_sem
+
         relation_1 = F.log_softmax(self.fc3_1(hc) / self.T1, dim=-1) + super_relation[
             ..., 0
         ].unsqueeze(
@@ -278,24 +301,70 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
         self.layer_head = self.config.decoder_layers * config.num_attention_heads
 
         # Frequency bias initialization
-        if kwargs.get("fg_matrix", None) is not None:  # when training
+        if kwargs.get("fg_matrix", None) is not None:  # TRAINING PHASE
             eps = config.freq_bias_eps
             fg_matrix = kwargs.get("fg_matrix", None)
             self.fg_matrix = fg_matrix
+
+            # P(relation)
             rel_dist = torch.FloatTensor(
                 (fg_matrix.sum(axis=(0, 1))) / (fg_matrix.sum() + eps)
             )
+            # P(relation | subject, object) - Global
             triplet_dist = torch.FloatTensor(
                 fg_matrix + eps / (fg_matrix.sum(2, keepdims=True) + eps)
             )
+
+            # Apply Log-Space conversion
             if config.use_log_softmax:
                 triplet_dist = F.log_softmax(triplet_dist, dim=-1)
             else:
                 triplet_dist = triplet_dist.log()
+
             self.rel_dist = nn.Parameter(rel_dist, requires_grad=False)
             self.triplet_dist = nn.Parameter(triplet_dist, requires_grad=False)
+
+            if config.hierarchical:
+                # Get dynamic mapping from util.py
+                # orig2famidx: mapping from 0-49 -> local index
+                # sizes: counts of each family
+                orig2famidx, num_geo, num_poss, num_sem = get_orig2idx()
+
+                # Create a mask tensor: [0, 2, 1, 0, ...]
+                orig2fam = torch.tensor(get_super_rel_map(), dtype=torch.long)
+
+                # --- Helper Function to Create Conditional Priors ---
+                def get_conditional_prior(family_id):
+                    # a. Mask: find which of the 50 relations belong to this family
+                    mask = (orig2fam == family_id)
+
+                    # b. Slice: Extract counts only for these relations
+                    # Shape: [Num_Obj, Num_Obj, Num_Family_Rels]
+                    counts_slice = fg_matrix[:, :, mask]
+
+                    # c. Normalize: Sum over THIS FAMILY's axis only
+                    # This ensures sum(P(r|family)) = 1
+                    denom = counts_slice.sum(2, keepdims=True) + eps
+                    prob = (counts_slice + eps) / denom
+
+                    if config.use_log_softmax:
+                        return F.log_softmax(prob, dim=-1)
+                    else:
+                        return prob.log()
+
+                self.triplet_dist_geo = nn.Parameter(
+                    torch.FloatTensor(get_conditional_prior(0)), requires_grad=False
+                )
+                self.triplet_dist_poss = nn.Parameter(
+                    torch.FloatTensor(get_conditional_prior(1)), requires_grad=False
+                )
+                self.triplet_dist_sem = nn.Parameter(
+                    torch.FloatTensor(get_conditional_prior(2)), requires_grad=False
+                )
+
             del rel_dist, triplet_dist
-        else:  # when infer
+
+        else:  # inference / resume
             self.triplet_dist = nn.Parameter(
                 torch.Tensor(
                     config.num_labels + 1, config.num_labels + 1, config.num_rel_labels
@@ -306,6 +375,22 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
                 torch.Tensor(config.num_rel_labels), requires_grad=False
             )
 
+            # Initialize Hierarchical placeholders
+            if config.hierarchical:
+                dim_obj = config.num_labels + 1
+
+                self.triplet_dist_geo = nn.Parameter(
+                    torch.zeros(dim_obj, dim_obj, config.num_geometric), 
+                    requires_grad=False
+                )
+                self.triplet_dist_poss = nn.Parameter(
+                    torch.zeros(dim_obj, dim_obj, config.num_possessive), 
+                    requires_grad=False
+                )
+                self.triplet_dist_sem = nn.Parameter(
+                    torch.zeros(dim_obj, dim_obj, config.num_semantic), 
+                    requires_grad=False
+                )
         self.proj_q = nn.ModuleList(
             [
                 nn.Linear(config.d_model, config.d_model)
@@ -525,9 +610,33 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
         rel_gate = torch.sigmoid(self.rel_predictor_gate(relation_source))
         gated_relation_source = torch.mul(rel_gate, relation_source).sum(dim=-2)
 
+        subj_classes = None
+        obj_classes = None
+        priors = None
+
+        if self.config.hierarchical and self.config.use_freq_bias:
+            # The model uses its own predictions to look up the bias
+            # logits shape: [batch, num_queries, num_classes]
+            predicted_classes = logits.argmax(-1) # [batch, num_queries]
+
+            subj_classes = predicted_classes
+            obj_classes = predicted_classes
+
+            priors = (
+                self.triplet_dist_geo, 
+                self.triplet_dist_poss, 
+                self.triplet_dist_sem
+            )
+
         if self.config.hierarchical:
-            # Hierarchical prediction uses (log softmax)
-            pred_rel = self.rel_predictor(gated_relation_source, logits)
+            # Pass the new arguments
+            pred_rel = self.rel_predictor(
+                gated_relation_source, 
+                logits,
+                subj_classes=subj_classes,
+                obj_classes=obj_classes,
+                priors=priors
+            )
         else:
             # Original flat prediction
             pred_rel = self.rel_predictor(gated_relation_source)
