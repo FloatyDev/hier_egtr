@@ -28,12 +28,12 @@ max_epochs: 10
 max_epochs_finetune: 10
 lr_backbone: 2.0e-7
 lr: 2.0e-6
-lr_initialized: 1.0e-5
+lr_initialized: 2.0e-4
 weight_decay: 1.0e-4
 gradient_clip_val: 0.1
 debug: false
 resume: true
-memo: ""
+memo: "joint_training_beta099"
 version: 0
 patience: 15
 finetune: true
@@ -61,5 +61,5 @@ hierarchical: true
 super_weight: 1
 train_head: true
 loss_balancing: "uniform"
-balancing_beta: 0.9999
+balancing_beta: 0.99
 artifact_path: "artifacts/"
