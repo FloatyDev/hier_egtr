@@ -562,7 +562,7 @@ class SGG(pl.LightningModule):
             log_dict[f"validation_" + k] = (
                 torch.stack([x[k] for x in self.validation_step_outputs]).mean().item()
             )
-        self.log_dict(log_dict, on_epoch=True)
+        self.log_dict(log_dict, on_epoch=True, sync_dist=True)
         self.validation_step_outputs.clear()
 
     @rank_zero_only
