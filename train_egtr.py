@@ -640,7 +640,7 @@ def str2bool(v):
         raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
-def generate_partition_data(seed, num_total=50, num_geo=15, num_poss=11, num_sem=24):
+def generate_partition_data(seed, num_geo, num_poss, num_sem, num_total=50):
     print(f"Generating random partition with seed {seed}")
     assert num_geo + num_poss + num_sem == num_total, "Partition sizes don't match"
 
@@ -781,6 +781,10 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
+    orig2famidx, num_geo, num_poss, num_sem = get_orig2idx()
+    args.num_geometric = num_geo
+    args.num_possessive = num_poss
+    args.num_semantic = num_sem
     if args.random_partition_seed is not None:
         partition_data = generate_partition_data(
             seed=args.random_partition_seed,
@@ -791,8 +795,6 @@ if __name__ == "__main__":
         )
     else:
         # Load the default manual partition
-        print("Using default manual partition from model.util")
-        orig2famidx, num_geo, num_poss, num_sem = get_orig2idx()
         partition_data = {
             "super_rel_map": get_super_rel_map(),
             "orig2idx": orig2famidx,
