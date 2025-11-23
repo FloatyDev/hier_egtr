@@ -556,10 +556,7 @@ class SGG(pl.LightningModule):
         if not self.validation_step_outputs:
             return
 
-        log_dict = {
-            "step": torch.tensor(self.global_step, dtype=torch.float32),
-            "epoch": torch.tensor(self.current_epoch, dtype=torch.float32),
-        }
+        log_dict = {}
         # aggregate metrics across batches
         for k in self.validation_step_outputs[0].keys():
             log_dict[f"validation_" + k] = (
