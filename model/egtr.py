@@ -226,19 +226,19 @@ class BayesianRelationClassifier(nn.Module):
             logit_poss = logit_poss + bias_poss
             logit_sem  = logit_sem  + bias_sem
 
-        relation_1 = F.log_softmax(self.fc3_1(hc) / self.T1, dim=-1) + super_relation[
+        relation_1 = F.log_softmax(logit_geo, dim=-1) + super_relation[
             ..., 0
         ].unsqueeze(
             -1
         )  # geo
 
-        relation_2 = F.log_softmax(self.fc3_2(hc) / self.T2, dim=-1) + super_relation[
+        relation_2 = F.log_softmax(logit_poss, dim=-1) + super_relation[
             ..., 1
         ].unsqueeze(
             -1
         )  # poss
 
-        relation_3 = F.log_softmax(self.fc3_3(hc) / self.T3, dim=-1) + super_relation[
+        relation_3 = F.log_softmax(logit_sem, dim=-1) + super_relation[
             ..., 2
         ].unsqueeze(
             -1
@@ -616,15 +616,14 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
 
         if self.config.hierarchical and self.config.use_freq_bias:
             # The model uses its own predictions to look up the bias
-            # logits shape: [batch, num_queries, num_classes]
             predicted_classes = logits.argmax(-1) # [batch, num_queries]
 
             subj_classes = predicted_classes
             obj_classes = predicted_classes
 
             priors = (
-                self.triplet_dist_geo, 
-                self.triplet_dist_poss, 
+                self.triplet_dist_geo,
+                self.triplet_dist_poss,
                 self.triplet_dist_sem
             )
 
