@@ -68,6 +68,104 @@ def sigmoid_focal_loss(
     return loss.mean(1).sum() / num_boxes
 
 
+
+class FocalLoss(nn.Module):
+    def __init__(
+        self,
+        gamma=2,
+        alpha=None,
+        reduction="mean",
+        task_type="binary",
+        num_classes=None,
+    ):
+        """
+        Unified Focal Loss class for binary, multi-class, and multi-label classification tasks.
+        :param gamma: Focusing parameter, controls the strength of the modulating factor (1 - p_t)^gamma
+        :param alpha: Balancing factor, can be a scalar or a tensor for class-wise weights. If None, no class balancing is used.
+        :param reduction: Specifies the reduction method: 'none' | 'mean' | 'sum'
+        :param task_type: Specifies the type of task: 'binary', 'multi-class', or 'multi-label'
+        :param num_classes: Number of classes (only required for multi-class classification)
+        """
+        super(FocalLoss, self).__init__()
+        self.gamma = gamma
+        self.alpha = alpha
+        self.reduction = reduction
+        self.task_type = task_type
+        self.num_classes = num_classes
+
+        # Handle alpha for class balancing in multi-class tasks
+        if (
+            task_type == "multi-class"
+            and alpha is not None
+            and isinstance(alpha, (list, torch.Tensor))
+        ):
+            assert (
+                num_classes is not None
+            ), "num_classes must be specified for multi-class classification"
+            if isinstance(alpha, list):
+                self.alpha = torch.Tensor(alpha)
+            else:
+                self.alpha = alpha
+
+    def forward(self, inputs, targets):
+        """
+        Forward pass to compute the Focal Loss based on the specified task type.
+        :param inputs: Predictions (logits) from the model.
+                       Shape:
+                         - binary/multi-label: (batch_size, num_classes)
+                         - multi-class: (batch_size, num_classes)
+        :param targets: Ground truth labels.
+                        Shape:
+                         - binary: (batch_size,)
+                         - multi-label: (batch_size, num_classes)
+                         - multi-class: (batch_size,)
+        """
+        if self.task_type == "binary":
+            return self.binary_focal_loss(inputs, targets)
+        elif self.task_type == "multi-class":
+            return self.multi_class_focal_loss(inputs, targets)
+        elif self.task_type == "multi-label":
+            return self.multi_label_focal_loss(inputs, targets)
+        else:
+            raise ValueError(
+                f"Unsupported task_type '{self.task_type}'. Use 'binary', 'multi-class', or 'multi-label'."
+            )
+
+    def multi_class_focal_loss(self, inputs, targets):
+        """Focal loss for multi-class classification."""
+        if self.alpha is not None:
+            alpha = self.alpha.to(inputs.device)
+
+        # Convert logits to probabilities with softmax
+        probs = nn.functional.softmax(inputs, dim=1)
+
+        # One-hot encode the targets
+        targets_one_hot = nn.functional.one_hot(
+            targets, num_classes=self.num_classes
+        ).float()
+
+        # Compute cross-entropy for each class
+        ce_loss = -targets_one_hot * torch.log(probs)
+
+        # Compute focal weight
+        p_t = torch.sum(probs * targets_one_hot, dim=1)  # p_t for each sample
+        focal_weight = (1 - p_t) ** self.gamma
+
+        # Apply alpha if provided (per-class weighting)
+        if self.alpha is not None:
+            alpha_t = alpha.gather(0, targets)
+            ce_loss = alpha_t.unsqueeze(1) * ce_loss
+
+        # Apply focal loss weight
+        loss = focal_weight.unsqueeze(1) * ce_loss
+
+        if self.reduction == "mean":
+            return loss.mean()
+        elif self.reduction == "sum":
+            return loss.sum()
+        return loss
+
+
 # below: bounding box utilities taken from https://github.com/facebookresearch/detr/blob/master/util/box_ops.py
 
 
@@ -274,6 +372,96 @@ def get_orig2idx():
     return orig2famidx, num_geometric, num_possessive, num_semantic
 
 
+def get_hierarchical_counts(fg_matrix):
+    """
+    Aggregates fine-grained relation counts into Super-Relation families.
+
+    Args:
+        fg_matrix: Numpy array or Tensor of shape (Num_Obj, Num_Obj, 50).
+                   Contains raw counts of relationships in the dataset.
+
+    Returns:
+        torch.Tensor: Shape (3,) containing [Count_Geometric, Count_Possessive, Count_Semantic]
+    """
+
+    fine_counts = torch.tensor(fg_matrix.sum(axis=(0, 1)), dtype=torch.float32)
+
+    # Mapping shape: [50]
+    mapping = torch.tensor(get_super_rel_map(), device=fine_counts.device)
+
+    family_counts = torch.zeros(3, device=fine_counts.device)
+
+    for i in range(3):
+        mask = mapping == i
+        # Sum the counts of all relations in this family
+        family_counts[i] = fine_counts[mask].sum()
+
+    return family_counts
+
+
+def get_super_bce_bias(fg_matrix, eps=1e-8):
+    """
+    Computes log-probability bias for BCE.
+    Unlike Softmax, this does not normalize across the 3 families.
+    It normalizes by the total occurrences of the (Subj, Obj) pair.
+
+    Returns:
+        torch.Tensor: (Num_Classes, Num_Classes, 3)
+    """
+    mapping = get_super_rel_map()
+    num_objs = fg_matrix.shape[0]
+
+    super_counts = np.zeros((num_objs, num_objs, 3), dtype=np.float32)
+    for r_idx, family_id in enumerate(mapping):
+        super_counts[:, :, family_id] += fg_matrix[:, :, r_idx]
+
+    # coompute the total count of the (S, O) pair appearing in the dataset
+    total_pair_counts = fg_matrix.sum(axis=2, keepdims=True)  # [N, N, 1]
+
+    probs = (super_counts + eps) / (total_pair_counts + eps)
+
+    return torch.from_numpy(np.log(probs))
+
+
+def get_super_frequency_bias(fg_matrix, eps=1e-12, use_log=True):
+
+    map = get_super_rel_map()
+
+    num_objs = fg_matrix.shape[0]
+    super_matrix = np.zeros((num_objs, num_objs, 3), dtype=np.float32)
+
+    for r_idx, family_id in enumerate(map):
+        super_matrix[:, :, family_id] += fg_matrix[:, :, r_idx]
+
+    denom = super_matrix.sum(axis=2, keepdims=True) + eps
+    probs = (super_matrix + eps) / denom
+
+    if use_log:
+        probs = np.log(probs)
+
+    return torch.from_numpy(probs)
+
+
+def get_super_root_frequency_bias(fg_matrix, eps=1e-12):
+    mapping = get_super_rel_map()
+    num_objs = fg_matrix.shape[0]
+
+    super_matrix = np.zeros((num_objs, num_objs, 3), dtype=np.float32)
+    for r_idx, family_id in enumerate(mapping):
+        super_matrix[:, :, family_id] += fg_matrix[:, :, r_idx]
+
+    global_counts = super_matrix.sum(axis=(0, 1), keepdims=True)
+    root_global_counts = np.sqrt(global_counts)
+
+    balanced_scores = (super_matrix + eps) / (root_global_counts + eps)
+
+    # create probability distribution
+    denom = balanced_scores.sum(axis=2, keepdims=True) + eps
+    probs = balanced_scores / denom
+
+    return torch.from_numpy(np.log(probs))
+
+
 class GTTripletVis(pl.Callback):
     """
     Plot GT triplets straight from the batch that flows through training.
@@ -438,4 +626,115 @@ class GTTripletVis(pl.Callback):
         # ------------------------------------------------------------------ #
         # … inside on_train_batch_end after creating `fig`
         _log_figure(fig, tag="GT_triplets/train", step=global_step, trainer=trainer)
+        plt.close(fig)
+
+class SuperRelationConfusionMatrix(pl.Callback):
+    def __init__(self, id2label, device="cpu"):
+        super().__init__()
+        self.super_cats = ["Geometric", "Possessive", "Semantic"]
+        # Load the mapping 50 -> 3
+        self.orig2fam = torch.tensor(get_super_rel_map(), device=device)
+
+        self.preds = []
+        self.targets = []
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+        # Reset storage at start of epoch
+        self.preds = []
+        self.targets = []
+        # Ensure mapping is on correct device
+        self.orig2fam = self.orig2fam.to(pl_module.device)
+
+    def on_validation_batch_end(
+        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
+    ):
+        """
+        outputs: The dict returned from your modified validation_step
+        """
+        model_out = outputs["outputs"]
+        # In your modified egtr.py, pred_rel is purely the super_relation logits (B, N, N, 3)
+        pred_logits = model_out["pred_rel"]
+        targets = outputs["targets"]  # List of dicts
+
+        # 2. Iterate through batch to align Preds with Targets
+        for i, target in enumerate(targets):
+            # Shape: [N_queries, N_queries, 3]
+            # We strictly only care about pairs that HAVE a ground truth relation.
+            # We are testing classification accuracy given detection.
+
+            tgt_rel_matrix = target[
+                "rel"
+            ]  # [N_queries, N_queries, 50] (sparse or dense)
+
+            # Find indices where a relation exists (Foreground)
+            # mask: [N, N] boolean
+            mask = tgt_rel_matrix.sum(dim=-1) > 0
+
+            if not mask.any():
+                continue
+
+            # --- Extract Predictions ---
+            # Get logits for positive pairs: [Num_Pos, 3]
+            active_preds = pred_logits[i][mask]
+            pred_fam = active_preds.argmax(dim=-1)  # [Num_Pos]
+
+            # --- Extract Targets ---
+            # Get GT vectors: [Num_Pos, 50]
+            active_tgts = tgt_rel_matrix[mask]
+
+            # Convert 50-dim one-hot to index (0-49)
+            # Note: Argmax handles multi-label by picking the first/highest index.
+            # Acceptable for sanity check.
+            gt_rel_idx = active_tgts.argmax(dim=-1)
+
+            # Map 0-49 -> 0-2 (Family)
+            gt_fam = self.orig2fam[gt_rel_idx]
+
+            # Store
+            self.preds.append(pred_fam.cpu())
+            self.targets.append(gt_fam.cpu())
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if not self.preds:
+            return
+
+        # Concatenate all batches
+        all_preds = torch.cat(self.preds).numpy()
+        all_targets = torch.cat(self.targets).numpy()
+
+        # Compute Matrix
+        cm = confusion_matrix(
+            all_targets,
+            all_preds,
+            labels=[0, 1, 2],
+            normalize="true",  # Normalize rows (True labels) to sum to 1
+        )
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(8, 6), dpi=120)
+        sns.heatmap(
+            cm,
+            annot=True,
+            fmt=".2f",
+            cmap="Blues",
+            xticklabels=self.super_cats,
+            yticklabels=self.super_cats,
+            ax=ax,
+        )
+        ax.set_ylabel("True Label")
+        ax.set_xlabel("Predicted Label")
+        ax.set_title(f"Super-Relation Confusion Matrix (Epoch {trainer.current_epoch})")
+
+        # Log to TensorBoard/WandB
+        if trainer.logger:
+            # Handle multiple loggers (Tensorboard + WandB)
+            loggers = (
+                trainer.loggers if hasattr(trainer, "loggers") else [trainer.logger]
+            )
+            for logger in loggers:
+                if isinstance(logger, pl.loggers.WandbLogger):
+                    import wandb
+
+                    logger.experiment.log({"val/confusion_matrix": wandb.Image(fig)})
+
         plt.close(fig)
