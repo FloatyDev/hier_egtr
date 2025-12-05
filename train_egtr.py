@@ -352,12 +352,17 @@ class SGG(pl.LightningModule):
                 assert artifact_path, "have to give artifact_path"
                 print(f"Loading checkpoint config from: {artifact_path}")
 
-                ckpt_config = DeformableDetrConfig.from_pretrained(artifact_path)
-
-                ckpt_is_hierarchical = getattr(ckpt_config, "hierarchical", False)
-                print(
-                    f"Checkpoint config loaded. Checkpoint is hierarchical: {ckpt_is_hierarchical}"
-                )
+                try:
+                    ckpt_config = DeformableDetrConfig.from_pretrained(artifact_path)
+                    ckpt_is_hierarchical = ckpt_config.hierarchical
+                    print(
+                        f"Checkpoint config loaded. Checkpoint is hierarchical: {ckpt_is_hierarchical}"
+                    )
+                except Exception as e:
+                    print(
+                        f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}"
+                    )
+                    ckpt_is_hierarchical = False
 
                 ckpt_path = sorted(
                     glob(f"{args.artifact_path}/checkpoints/epoch=*.ckpt"),
