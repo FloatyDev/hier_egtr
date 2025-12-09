@@ -350,8 +350,59 @@ def get_super_rel_map():
         #1,  # 48 wearing -> possessive
         #1,  # 49 wears -> possessive
         #1,  # 50: with -> possessive
-        2, 2, 2, 2, 2, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 2, 2, 0, 0, 2, 0, 2, 0, 1, 0, 1, 0, 0, 2, 2, 2, 0, 2, 0, 0, 2, 0, 1, 2, 1, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2 
-        ]
+        # clip-text mapping
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        0,
+        0,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        2,
+        0,
+        0,
+        2,
+        0,
+        2,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0,
+        2,
+        2,
+        2,
+        0,
+        2,
+        0,
+        0,
+        2,
+        0,
+        1,
+        2,
+        1,
+        0,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+    ]
+
 
 def get_orig2idx():
     fam_lists = {0: [], 1: [], 2: []}
@@ -461,7 +512,39 @@ def get_super_root_frequency_bias(fg_matrix, eps=1e-12):
 
     return torch.from_numpy(np.log(probs))
 
+def get_class_weights(fg_matrix):
+    """
+    Calculates class weights to counteract the Geometric bias.
+    
+    Args:
+        fg_matrix: (Num_Obj, Num_Obj, 50) count matrix from dataset stats
+        beta: (Optional) Smoothing factor for "Effective Number of Samples" 
+              closer to 1.0 = more aggressive re-balancing.
+              
+    Returns:
+        torch.Tensor: Shape (3,) weights for CrossEntropyLoss
+    """
+    # Sum over subject/object dimensions -> [50]
+    if hasattr(fg_matrix, 'sum'): # Handles both tensor and numpy
+         fine_counts = torch.tensor(fg_matrix.sum(axis=(0, 1)), dtype=torch.float32)
+    
+    # Map to families [0, 1, 2]
+    mapping = torch.tensor(get_super_rel_map(), device=fine_counts.device)
+    family_counts = torch.zeros(3, device=fine_counts.device)
+    
+    for i in range(3):
+        mask = mapping == i
+        family_counts[i] = fine_counts[mask].sum()
 
+    # Formula: n_samples / (n_classes * count_class)
+    total_samples = family_counts.sum()
+    n_classes = 3
+    
+    weights = total_samples / (n_classes * family_counts)
+
+    # weights = torch.clamp(weights, max=10.0) 
+    
+    return weights
 class GTTripletVis(pl.Callback):
     """
     Plot GT triplets straight from the batch that flows through training.
