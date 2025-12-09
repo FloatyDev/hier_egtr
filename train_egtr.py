@@ -346,6 +346,76 @@ class SGG(pl.LightningModule):
                 _key for _key, _, _ in load_info["mismatched_keys"]
             ]
         # only train relation_head
+        # if train_relation_head:
+        #    if not main_trained:
+        #        # load trained egtr weights for main training
+        #        assert artifact_path, "have to give artifact_path"
+        #        print(f"Loading checkpoint config from: {artifact_path}")
+
+        #        try:
+        #            ckpt_config = DeformableDetrConfig.from_pretrained(artifact_path)
+        #            ckpt_is_hierarchical = ckpt_config.hierarchical
+        #            print(
+        #                f"Checkpoint config loaded. Checkpoint is hierarchical: {ckpt_is_hierarchical}"
+        #            )
+        #        except Exception as e:
+        #            print(
+        #                f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}"
+        #            )
+        #            ckpt_is_hierarchical = False
+
+        #        ckpt_path = sorted(
+        #            glob(f"{args.artifact_path}/checkpoints/epoch=*.ckpt"),
+        #            key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
+        #        )[-1]
+        #        state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
+
+        #        for k in list(state_dict.keys()):
+        #            if (
+        #                k.startswith("model.rel_predictor.")
+        #                and not ckpt_is_hierarchical
+        #            ):
+        #                print(f"----deleting {k}")
+        #                del state_dict[k]
+        #            else:
+        #                state_dict[k[6:]] = state_dict.pop(k)  # "model."
+
+        #        missing, unexpected = self.model.load_state_dict(
+        #            state_dict, strict=False
+        #        )
+        #        print("[sgg] missing keys:", missing)
+        #        print("[sgg] unexpected keys:", unexpected)
+
+        #    # disable all parameters and enable training only the relation head
+        #    for p in self.model.parameters():
+        #        p.requires_grad = False
+
+        #    # enable the layers that must learn
+        #    allow = (
+        #        "rel_predictor.",  # hierarchical head
+        #        "proj_q",  # query projection
+        #        "proj_k",  # key projection
+        #        "final_sub_proj",  # keeps sub-object embeddings in sync
+        #        "final_obj_proj",  # keeps object embeddings in sync
+        #        "rel_predictor_gate",
+        #    )
+
+        #    for n, p in self.model.named_parameters():
+        #        if n.startswith(allow):
+        #            p.requires_grad = True
+
+        #    trainable = [n for n, p in self.model.named_parameters() if p.requires_grad]
+        #    unexpected = [n for n in trainable if not n.startswith(allow)]
+
+        #    count_trainable(model=self.model, debugging=True)
+
+        #    assert not unexpected, (
+        #        f"[sgg] unexpected trainable parameters:\n  {unexpected[:10]}… "
+        #        f"(total {len(unexpected)})"
+        #    )
+
+        #    print(f"[sgg] trainable parameter count: {len(trainable)}")
+        # only train relation_head
         if train_relation_head:
             if not main_trained:
                 # load trained egtr weights for main training
@@ -355,65 +425,79 @@ class SGG(pl.LightningModule):
                 try:
                     ckpt_config = DeformableDetrConfig.from_pretrained(artifact_path)
                     ckpt_is_hierarchical = ckpt_config.hierarchical
-                    print(
-                        f"Checkpoint config loaded. Checkpoint is hierarchical: {ckpt_is_hierarchical}"
-                    )
+                    print(f"Checkpoint config loaded. Checkpoint is hierarchical: {ckpt_is_hierarchical}")
                 except Exception as e:
-                    print(
-                        f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}"
-                    )
+                    print(f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}")
                     ckpt_is_hierarchical = False
 
                 ckpt_path = sorted(
                     glob(f"{args.artifact_path}/checkpoints/epoch=*.ckpt"),
                     key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
                 )[-1]
-                state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
 
-                for k in list(state_dict.keys()):
-                    if (
-                        k.startswith("model.rel_predictor.")
-                        and not ckpt_is_hierarchical
-                    ):
-                        print(f"----deleting {k}")
-                        del state_dict[k]
+                state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
+                new_state_dict = {}
+
+                # Determine the Teacher's depth (Flat-50 usually has 3 layers: 0, 1, 2)
+                # The last layer is the Head, everything before is Shared.
+                teacher_num_layers = 3 
+                teacher_last_layer_idx = teacher_num_layers - 1 # e.g., 2
+
+                print("DEBUG: Starting Weight Mapping...")
+                for k, v in state_dict.items():
+                    if "rel_predictor." in k and "layers." in k and "rel_predictor_gate" not in k and not ckpt_is_hierarchical:
+                        try:
+                            part_after_layers = k.split("layers.")[1]
+                            layer_idx = int(part_after_layers.split(".")[0])
+
+                            if layer_idx == teacher_last_layer_idx:
+                                new_k = k.replace(f"layers.{layer_idx}", "fine_head")
+                                new_state_dict[new_k] = v
+                                print(f"Mapped {k} -> {new_k}") # Uncomment to debug
+                            elif layer_idx < teacher_last_layer_idx:
+                                new_k = k.replace(f"layers.{layer_idx}", f"shared_layers.{layer_idx}")
+                                new_state_dict[new_k] = v
+                                print(f"Mapped {k} -> {new_k}") # Uncomment to debug
+                            else:
+                                print(f"Warning: Found layer index {layer_idx} higher than max expected {teacher_last_layer_idx}. Ignoring.")
+
+                        except ValueError:
+                            new_state_dict[k] = v
                     else:
-                        state_dict[k[6:]] = state_dict.pop(k)  # "model."
+                        new_state_dict[k] = v
+                # Swap state dict
+                state_dict = new_state_dict
+                # Remove "model." prefix if present
+                for k in list(state_dict.keys()):
+                     if k.startswith("model."):
+                        state_dict[k[6:]] = state_dict.pop(k)
 
                 missing, unexpected = self.model.load_state_dict(
                     state_dict, strict=False
                 )
-                print("[sgg] missing keys:", missing)
+                print("[sgg] missing keys (Should include super_head):", missing)
                 print("[sgg] unexpected keys:", unexpected)
+                # Verify that shared_layers.1 is NOT missing anymore
+                if any("shared_layers.1" in m for m in missing):
+                    print("CRITICAL ERROR: shared_layers.1 is still missing! Check checkpoint indices.")
 
-            # disable all parameters and enable training only the relation head
+            # --- STRICT FREEZING ---
             for p in self.model.parameters():
                 p.requires_grad = False
 
-            # enable the layers that must learn
-            allow = (
-                "rel_predictor.",  # hierarchical head
-                # "proj_q",  # query projection
-                # "proj_k",  # key projection
-                # "final_sub_proj",  # keeps sub-object embeddings in sync
-                # "final_obj_proj",  # keeps object embeddings in sync
-                "rel_predictor_gate",  # tiny gate mlp, if you use it
-            )
+            # Enable ONLY the Super-Relation Head
+            allow = ("rel_predictor.super_head",)
 
             for n, p in self.model.named_parameters():
-                if n.startswith(allow):
+                if any(x in n for x in allow):
                     p.requires_grad = True
 
             trainable = [n for n, p in self.model.named_parameters() if p.requires_grad]
-            unexpected = [n for n in trainable if not n.startswith(allow)]
+            for t in trainable:
+                assert "fine_head" not in t, "Error: Fine Head (Teacher) should be frozen!"
+                assert "shared_layers" not in t, "Error: Shared Layers should be frozen!"
 
             count_trainable(model=self.model, debugging=True)
-
-            assert not unexpected, (
-                f"[sgg] unexpected trainable parameters:\n  {unexpected[:10]}… "
-                f"(total {len(unexpected)})"
-            )
-
             print(f"[sgg] trainable parameter count: {len(trainable)}")
 
         if main_trained:
@@ -1109,6 +1193,10 @@ if __name__ == "__main__":
                 print("### Main training")
             if ckpt_path is not None:
                 print(f"### Resume training from {ckpt_path}")
+<<<<<<< HEAD
+=======
+
+>>>>>>> 3485adb (feat: perform student-teacher training)
             trainer.fit(module, ckpt_path=ckpt_path)
 
             wandb.finish()

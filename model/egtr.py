@@ -127,6 +127,55 @@ def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
+class DualHeadRelationClassifier(nn.Module):
+    """
+    Teacher-Student Classifier optimized for Distillation.
+    Replicates the DeformableDetrMLPPredictionHead structure to allow
+    weight loading from a Flat-50 checkpoint.
+    """
+
+    def __init__(
+        self,
+        input_dim=512,  # 2 * d_model
+        hidden_dim=256,  # d_model
+        num_fine_classes=50,  # Teacher output (Matches Flat-50 output_dim)
+        num_super_classes=3,  # Student output (Geometric, Possessive, Semantic)
+        num_layers=3,  # Depth of the original Flat-50 MLP
+    ):
+        super(DualHeadRelationClassifier, self).__init__()
+
+        # --- Shared Layers (The Frozen Feature Extractor) ---
+        self.shared_layers = nn.ModuleList()
+
+        self.shared_layers.append(nn.Linear(input_dim, hidden_dim))
+
+        for _ in range(num_layers - 2):
+            self.shared_layers.append(nn.Linear(hidden_dim, hidden_dim))
+
+        self.fine_head = nn.Linear(hidden_dim, num_fine_classes)
+
+        # This is the only layer you will train.
+        self.super_head = nn.Linear(hidden_dim, num_super_classes)
+
+    def forward(self, features):
+        # features: [Batch, Num_Queries, Num_Queries, Input_Dim]
+        # Ignore det_logits, etc. as Flat-50 didn't use them.
+
+        x = features
+
+        # Pass through Shared Layers (with ReLU)
+        for layer in self.shared_layers:
+            x = F.relu(layer(x))
+
+        # Teacher Output (Frozen Features)
+        logits_fine = self.fine_head(x)
+
+        # Student Output (New Task)
+        logits_super = self.super_head(x)
+
+        return logits_fine, logits_super
+
+
 class BayesianRelationClassifier(nn.Module):
     """
     Modified hierarchical classifier for 4D gated_relation_source features
@@ -337,13 +386,12 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
         self.rel_predictor_gate = nn.Linear(2 * config.d_model, 1)
 
         if self.config.hierarchical:
-            self.rel_predictor = BayesianRelationClassifier(
+            self.rel_predictor = DualHeadRelationClassifier(
                 input_dim=2 * config.d_model,
-                num_classes=config.num_labels,
-                num_geometric=config.num_geometric,
-                num_possessive=config.num_possessive,
-                num_semantic=config.num_semantic,
-                use_class_context=self.config.use_class_context,
+                hidden_dim=config.d_model,
+                num_fine_classes=50,
+                num_super_classes=3,
+                num_layers=3
             )
         else:
             self.rel_predictor = DeformableDetrMLPPredictionHead(
@@ -1021,6 +1069,66 @@ class SceneGraphGenerationLoss(nn.Module):
         }
         return losses
 
+    def _loss_relations_distillation(
+        self,
+        pred_fine,  # Teacher Logits (N, N, 50)
+        pred_super,  # Student Logits (N, N, 3)
+        target_rel,  # GT (N, N, 50)
+    ):
+        """
+        Computes Weighted Cross Entropy + Knowledge Distillation on POSITIVE relations only.
+        Discards hard balancing/negative sampling.
+        """
+        active_indices = target_rel.nonzero(as_tuple=False)
+
+        if active_indices.numel() == 0:
+            return {"loss_rel": pred_super.sum() * 0.0}
+
+        i, j = active_indices[:, 0], active_indices[:, 1]
+
+        logits_super_active = pred_super[i, j]  # (K, 3)
+        logits_fine_active = pred_fine[i, j]  # (K, 50)
+
+        gt_classes_fine = active_indices[:, 2]  # (K,)
+        target_super = self.orig2fam[gt_classes_fine]  # (K,)
+
+        # self.super_loss must be nn.CrossEntropyLoss(weight=..., reduction='none')
+        loss_ce = self.super_loss(logits_super_active, target_super)
+
+        # KL Divergence
+        with torch.no_grad():
+            probs_fine = torch.sigmoid(logits_fine_active)  # (K, 50)
+
+            probs_teacher_super = torch.zeros_like(logits_super_active)
+            for fam_id in range(3):
+                mask = self.orig2fam == fam_id
+                # Sum probabilities of all children in this family
+                probs_teacher_super[:, fam_id] = probs_fine[:, mask].sum(dim=1)
+
+            probs_teacher_super = probs_teacher_super / (
+                probs_teacher_super.sum(dim=1, keepdim=True) + 1e-6
+            )
+
+        # Student Log-Probs
+        log_probs_student = F.log_softmax(logits_super_active, dim=1)
+
+        # KL Div: sum(P_teach * (log P_teach - log P_stud))
+        # reduction='none' so we can apply adaptive weights
+        loss_distill = F.kl_div(
+            log_probs_student, probs_teacher_super, reduction="batchmean"
+        )
+
+        # --- C. Total Loss ---
+        # You can tune alpha (e.g., 1.0)
+        alpha = 1.0
+        total_loss = loss_ce + (alpha * loss_distill)
+
+        return {
+            "loss_rel": total_loss,
+            "loss_ce": loss_ce,
+            "loss_distill": loss_distill,
+        }
+
     def loss_relations(self, outputs, targets, indices, matching_costs, num_boxes):
         losses = []
         connect_losses = []
@@ -1032,7 +1140,6 @@ class SceneGraphGenerationLoss(nn.Module):
         for i, ((src_index, target_index), target, matching_cost) in enumerate(
             zip(indices, targets, matching_costs)
         ):
-            # Only calculate relation losses for matched objects (num_object_queries * num_object_queries -> num_obj * num_obj)
             full_index = torch.arange(self.num_object_queries)
             uniques, counts = torch.cat([full_index, src_index]).unique(
                 return_counts=True
@@ -1052,24 +1159,6 @@ class SceneGraphGenerationLoss(nn.Module):
                 ]
             )
 
-            if self.hierarchical:
-                # Unpack hierarchical predictions
-                if isinstance(outputs["pred_rel"], tuple):
-                    pred_geo, pred_poss, pred_sem, pred_super, _ = outputs["pred_rel"]
-                    pred_geo = pred_geo[i, full_src_index][:, full_src_index]
-                    pred_poss = pred_poss[i, full_src_index][:, full_src_index]
-                    pred_sem = pred_sem[i, full_src_index][:, full_src_index]
-                    pred_super = pred_super[i, full_src_index][:, full_src_index]
-                else:
-                    raise ValueError(
-                        "Hierarchical mode expects tuple from relationship predictor"
-                    )
-            else:
-                # flat prediction
-                pred_rel = outputs["pred_rel"][i, full_src_index][
-                    :, full_src_index
-                ]  # [num_obj_queries, num_obj_queries, config.num_rel_labels]
-
             target_rel = target["rel"][full_target_index][
                 :, full_target_index
             ]  # [num_obj_queries, num_obj_queries, config.num_rel_labels]
@@ -1087,56 +1176,37 @@ class SceneGraphGenerationLoss(nn.Module):
             # Connectivity loss
             loss = self.connectivity_loss(pred_connectivity, target_connect)
             connect_losses.append(loss)
-            # Relationship loss
-            if self.hierarchical and "pred_rel" in outputs:
-                # Calculate hierarchical relationship losses
-                geo_loss, poss_loss, sem_loss, super_loss = (
-                    self._hierarchical_relation_loss(
-                        pred_geo,
-                        pred_poss,
-                        pred_sem,
-                        pred_super,
-                        target_rel,
-                        full_matching_cost,
-                        self.rel_sample_negatives,
-                        self.rel_sample_nonmatching,
-                    )
+
+            if self.hierarchical and isinstance(outputs["pred_rel"], tuple):
+                raw_pred_fine, raw_pred_super = outputs["pred_rel"]
+
+                pred_fine = raw_pred_fine[i, full_src_index][:, full_src_index]
+                pred_super = raw_pred_super[i, full_src_index][:, full_src_index]
+
+                loss_distill_dict = self._loss_relations_distillation(
+                    pred_fine,
+                    pred_super,
+                    target_rel,
                 )
-                loss = geo_loss + poss_loss + sem_loss + self.super_weight * super_loss
-                geo_losses.append(geo_loss)
-                poss_losses.append(poss_loss)
-                sem_losses.append(sem_loss)
-                super_losses.append(super_loss)
+
+                # The dictionary contains the summed loss
+                losses.append(loss_distill_dict["loss_rel"])
+
             else:
-                # Original flat relationship loss
+                pred_rel = outputs["pred_rel"][i, full_src_index][:, full_src_index]
                 if self.model_training:
                     loss = self._loss_relations(
-                        pred_rel,
-                        target_rel,
-                        full_matching_cost,
-                        self.rel_sample_negatives,
-                        self.rel_sample_nonmatching,
+                        pred_rel, target_rel, full_matching_cost, 
+                        self.rel_sample_negatives, self.rel_sample_nonmatching
                     )
                 else:
-                    loss = self._loss_relations(
-                        pred_rel, target_rel, full_matching_cost, None, None
-                    )
-            losses.append(loss)
+                    loss = self._loss_relations(pred_rel, target_rel, full_matching_cost, None, None)
+                losses.append(loss)
+
         main_loss_dict = {
-            "loss_rel": torch.stack(
-                losses
-            ).mean(),  # maybe use cat and ajdust dimension of loss.view(-1)/loss.unsqueeze(-1)
-            "loss_connectivity": torch.stack(connect_losses).mean(),
+            "loss_rel": torch.stack(losses).mean() if losses else torch.tensor(0.0, device=outputs["logits"].device),
+            "loss_connectivity": torch.stack(connect_losses).mean() if connect_losses else torch.tensor(0.0, device=outputs["logits"].device),
         }
-
-        if self.hierarchical:
-            self.hierarchical_losses = {
-                "geo_loss": torch.stack(geo_losses).mean(),
-                "poss_loss": torch.stack(poss_losses).mean(),
-                "sem_loss": torch.stack(sem_losses).mean(),
-                "super_loss": torch.stack(super_losses).mean(),
-            }
-
         return main_loss_dict
 
     def _select_relation_indices(
