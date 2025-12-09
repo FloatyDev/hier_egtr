@@ -14,6 +14,9 @@ import wandb
 import torch
 from torch import Tensor, nn
 
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+from model.deformable_detr import DeformableDetrHungarianMatcher
 
 def dice_loss(inputs, targets, num_boxes):
     """
@@ -715,65 +718,61 @@ class SuperRelationConfusionMatrix(pl.Callback):
     def __init__(self, id2label, device="cpu"):
         super().__init__()
         self.super_cats = ["Geometric", "Possessive", "Semantic"]
-        # Load the mapping 50 -> 3
         self.orig2fam = torch.tensor(get_super_rel_map(), device=device)
 
         self.preds = []
         self.targets = []
 
+        self.matcher = DeformableDetrHungarianMatcher(
+            class_cost=1.0, bbox_cost=5.0, giou_cost=2.0
+        )
+
     def on_validation_epoch_start(self, trainer, pl_module):
         # Reset storage at start of epoch
         self.preds = []
         self.targets = []
-        # Ensure mapping is on correct device
         self.orig2fam = self.orig2fam.to(pl_module.device)
 
     def on_validation_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
     ):
         """
-        outputs: The dict returned from your modified validation_step
+        outputs: The dict returned from the updated validation_step
         """
-        model_out = outputs["outputs"]
-        # In your modified egtr.py, pred_rel is purely the super_relation logits (B, N, N, 3)
-        pred_logits = model_out["pred_rel"]
-        targets = outputs["targets"]  # List of dicts
+        model_out = outputs["outputs"] 
+        targets = outputs["targets"]
 
-        # 2. Iterate through batch to align Preds with Targets
-        for i, target in enumerate(targets):
-            # Shape: [N_queries, N_queries, 3]
-            # We strictly only care about pairs that HAVE a ground truth relation.
-            # We are testing classification accuracy given detection.
+        pred_rel = model_out["pred_rel"]
+        if isinstance(pred_rel, tuple):
+            pred_super = pred_rel[1] 
+        else:
+            pred_super = pred_rel
 
-            tgt_rel_matrix = target[
-                "rel"
-            ]  # [N_queries, N_queries, 50] (sparse or dense)
+        outputs_for_matcher = {
+            "logits": model_out["logits"],
+            "pred_boxes": model_out["pred_boxes"]
+        }
 
-            # Find indices where a relation exists (Foreground)
-            # mask: [N, N] boolean
-            mask = tgt_rel_matrix.sum(dim=-1) > 0
+        indices = self.matcher(outputs_for_matcher, targets)
 
-            if not mask.any():
+        for i, (src_idx, tgt_idx) in enumerate(indices):
+            rel_logits_matched = pred_super[i][src_idx][:, src_idx]
+
+            tgt_rel_matrix = targets[i]["rel"][tgt_idx][:, tgt_idx]
+
+            # Sum over 50 classes to find active edges
+            active_mask = tgt_rel_matrix.sum(dim=-1) > 0 
+
+            if not active_mask.any():
                 continue
 
-            # --- Extract Predictions ---
-            # Get logits for positive pairs: [Num_Pos, 3]
-            active_preds = pred_logits[i][mask]
-            pred_fam = active_preds.argmax(dim=-1)  # [Num_Pos]
+            active_logits = rel_logits_matched[active_mask] # [K, 3]
+            pred_fam = active_logits.argmax(dim=-1)         # [K]
 
-            # --- Extract Targets ---
-            # Get GT vectors: [Num_Pos, 50]
-            active_tgts = tgt_rel_matrix[mask]
+            active_tgts = tgt_rel_matrix[active_mask]       # [K, 50]
+            gt_rel_idx = active_tgts.argmax(dim=-1)         # [K] (0-49)
+            gt_fam = self.orig2fam[gt_rel_idx]              # [K] (0-2)
 
-            # Convert 50-dim one-hot to index (0-49)
-            # Note: Argmax handles multi-label by picking the first/highest index.
-            # Acceptable for sanity check.
-            gt_rel_idx = active_tgts.argmax(dim=-1)
-
-            # Map 0-49 -> 0-2 (Family)
-            gt_fam = self.orig2fam[gt_rel_idx]
-
-            # Store
             self.preds.append(pred_fam.cpu())
             self.targets.append(gt_fam.cpu())
 
