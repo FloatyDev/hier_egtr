@@ -16,7 +16,6 @@ from torch import Tensor, nn
 
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
-from model.deformable_detr import DeformableDetrHungarianMatcher
 
 def dice_loss(inputs, targets, num_boxes):
     """
@@ -301,109 +300,109 @@ def count_trainable(model, debugging=False):
 
 def get_super_rel_map():
     return [
-        # 1-6: geometric
-        #0,  # 1 above -> geometric
-        #0,  # 2 accross -> geometric
-        #0,  # 3 against -> geometric
-        #0,  # 4 along -> geometric
-        #0,  # 5 and -> geometric
-        #0,  # 6 at -> geometric
-        #2,  # 7 attached to -> semantic
-        #0,  # 8 behind  -> geometric
-        #1,  # 9: belonging to -> possessive
-        #0,  # 10: between -> geometric
-        #2,  # 11 carrying -> semantic
-        #2,  # 12 covered in -> semantic
-        #2,  # 13 covering -> semantic
-        #2,  # 14 eating -> semantic
-        #2,  # 15 flying in -> semantic
-        #1,  # 16 for (misc) -> possessive (exclusion)
-        #1,  # 17 from (misc) -> possessive (exclusion)
-        #2,  # 18 growing on () -> semantic
-        #2,  # 19 hanging from -> semantic
-        #1,  # 20: has -> possessive
-        #2,  # 21: holding -> semantic (light_semantic_posession treated as semantic)
-        #0,  # 22 in -> geometric
-        #0,  # 23 in front of -> geometric
-        #2,  # 24 laying on -> semantic
-        #2,  # 25 looking at -> semantic
-        #2,  # 26 lying on -> semantic
-        #1,  # 27 made of -> possessive
-        #2,  # 28: mounted on -> semantic
-        #0,  # 29: near -> geometric
-        #1,  # 30: of -> possessive
-        #0,  # 31 on -> geometric
-        #0,  # 32 on back of -> geometric
-        #0,  # 33 over -> geometric
-        ## 34-35: semantic
-        #2,  # 34 painted on -> semantic
-        #2,  # 3 parked on -> semantic
-        #1,  # 36: part of -> possessive
-        #2,  # 37 playing -> semantic
-        #2,  # 38 riding -> semantic
-        #2,  # 39 says -> semantic
-        #2,  # 40 sitting on -> semantic
-        #2,  # 41 standing on -> semantic
-        #1,  # 42: to -> possessive
-        #0,  # 43: under -> geometric
-        #2,  # 44: using -> semantic (light_semantic_posession treated as semantic)
-        #2,  # 45 walking in -> semantic
-        #2,  # 46 walking on -> semantic
-        #2,  # 47 watching -> semantic
-        #1,  # 48 wearing -> possessive
-        #1,  # 49 wears -> possessive
-        #1,  # 50: with -> possessive
+        #1-6: geometric
+        0,  # 1 above -> geometric
+        0,  # 2 accross -> geometric
+        0,  # 3 against -> geometric
+        0,  # 4 along -> geometric
+        0,  # 5 and -> geometric
+        0,  # 6 at -> geometric
+        2,  # 7 attached to -> semantic
+        0,  # 8 behind  -> geometric
+        1,  # 9: belonging to -> possessive
+        0,  # 10: between -> geometric
+        2,  # 11 carrying -> semantic
+        2,  # 12 covered in -> semantic
+        2,  # 13 covering -> semantic
+        2,  # 14 eating -> semantic
+        2,  # 15 flying in -> semantic
+        1,  # 16 for (misc) -> possessive (exclusion)
+        1,  # 17 from (misc) -> possessive (exclusion)
+        2,  # 18 growing on () -> semantic
+        2,  # 19 hanging from -> semantic
+        1,  # 20: has -> possessive
+        2,  # 21: holding -> semantic (light_semantic_posession treated as semantic)
+        0,  # 22 in -> geometric
+        0,  # 23 in front of -> geometric
+        2,  # 24 laying on -> semantic
+        2,  # 25 looking at -> semantic
+        2,  # 26 lying on -> semantic
+        1,  # 27 made of -> possessive
+        2,  # 28: mounted on -> semantic
+        0,  # 29: near -> geometric
+        1,  # 30: of -> possessive
+        0,  # 31 on -> geometric
+        0,  # 32 on back of -> geometric
+        0,  # 33 over -> geometric
+        # 34-35: semantic
+        2,  # 34 painted on -> semantic
+        2,  # 3 parked on -> semantic
+        1,  # 36: part of -> possessive
+        2,  # 37 playing -> semantic
+        2,  # 38 riding -> semantic
+        2,  # 39 says -> semantic
+        2,  # 40 sitting on -> semantic
+        2,  # 41 standing on -> semantic
+        1,  # 42: to -> possessive
+        0,  # 43: under -> geometric
+        2,  # 44: using -> semantic (light_semantic_posession treated as semantic)
+        2,  # 45 walking in -> semantic
+        2,  # 46 walking on -> semantic
+        2,  # 47 watching -> semantic
+        1,  # 48 wearing -> possessive
+        1,  # 49 wears -> possessive
+        1,  # 50: with -> possessive
         # clip-text mapping
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        0,
-        0,
-        2,
-        2,
-        0,
-        0,
-        0,
-        0,
-        0,
-        2,
-        2,
-        0,
-        0,
-        2,
-        0,
-        2,
-        0,
-        1,
-        0,
-        1,
-        0,
-        0,
-        2,
-        2,
-        2,
-        0,
-        2,
-        0,
-        0,
-        2,
-        0,
-        1,
-        2,
-        1,
-        0,
-        2,
-        2,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        2,
+        #2,
+        #2,
+        #2,
+        #2,
+        #2,
+        #2,
+        #0,
+        #0,
+        #2,
+        #2,
+        #0,
+        #0,
+        #0,
+        #0,
+        #0,
+        #2,
+        #2,
+        #0,
+        #0,
+        #2,
+        #0,
+        #2,
+        #0,
+        #1,
+        #0,
+        #1,
+        #0,
+        #0,
+        #2,
+        #2,
+        #2,
+        #0,
+        #2,
+        #0,
+        #0,
+        #2,
+        #0,
+        #1,
+        #2,
+        #1,
+        #0,
+        #2,
+        #2,
+        #0,
+        #0,
+        #0,
+        #0,
+        #0,
+        #0,
+        #2,
     ]
 
 
@@ -723,6 +722,8 @@ class SuperRelationConfusionMatrix(pl.Callback):
         self.preds = []
         self.targets = []
 
+        from model.deformable_detr import DeformableDetrHungarianMatcher
+
         self.matcher = DeformableDetrHungarianMatcher(
             class_cost=1.0, bbox_cost=5.0, giou_cost=2.0
         )
@@ -753,7 +754,7 @@ class SuperRelationConfusionMatrix(pl.Callback):
             "pred_boxes": model_out["pred_boxes"]
         }
 
-        indices = self.matcher(outputs_for_matcher, targets)
+        indices, _ = self.matcher(outputs_for_matcher, targets)  # <--- CHANGED THIS LINE
 
         for i, (src_idx, tgt_idx) in enumerate(indices):
             rel_logits_matched = pred_super[i][src_idx][:, src_idx]
@@ -820,3 +821,98 @@ class SuperRelationConfusionMatrix(pl.Callback):
                     logger.experiment.log({"val/confusion_matrix": wandb.Image(fig)})
 
         plt.close(fig)
+        
+class TeacherStudentAgreementCallback(pl.Callback):
+    """
+    Validates Feature Learning by comparing Student predictions against 
+    Projected Teacher predictions on matched Ground Truth pairs.
+    """
+    def __init__(self, device='cuda'):
+        super().__init__()
+       
+        self.mapping = torch.tensor(get_super_rel_map(), device=device)
+
+        from model.deformable_detr import DeformableDetrHungarianMatcher
+
+        self.matcher = DeformableDetrHungarianMatcher(
+            class_cost=1.0, bbox_cost=5.0, giou_cost=2.0
+        )
+        
+        self.agreements = []
+        self.kl_divs = []
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+        self.agreements = []
+        self.kl_divs = []
+       
+        if self.mapping.device != pl_module.device:
+            self.mapping = self.mapping.to(pl_module.device)
+
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        """
+        Intercepts validation batch to compare Teacher vs Student.
+        """
+        model_out = outputs["outputs"] # From SGG.validation_step
+        targets = outputs["targets"]
+        
+        pred_rel = model_out.get("pred_rel")
+        if not isinstance(pred_rel, tuple):
+            return 
+
+ 
+        teacher_logits_batch, student_logits_batch = pred_rel
+
+  
+        outputs_for_matcher = {
+            "logits": model_out["logits"], 
+            "pred_boxes": model_out["pred_boxes"]
+        }
+        
+        indices = self.matcher(outputs_for_matcher, targets)
+
+        for i, (src_idx, tgt_idx) in enumerate(indices):
+            
+            tgt_matrix = targets[i]['rel'][tgt_idx][:, tgt_idx] # [M, M, 50]
+            
+        
+            active_mask = tgt_matrix.sum(dim=-1) > 0 # [M, M] boolean mask
+            
+            if not active_mask.any():
+                continue
+
+            t_logits = teacher_logits_batch[i][src_idx][:, src_idx][active_mask]
+            s_logits = student_logits_batch[i][src_idx][:, src_idx][active_mask]
+
+            t_probs_fine = F.softmax(t_logits, dim=-1) # [K, 50]
+            t_probs_super = torch.zeros_like(s_logits) # [K, 3]
+
+            for fam_id in range(3):
+                fam_mask = (self.mapping == fam_id)
+                t_probs_super[:, fam_id] = t_probs_fine[:, fam_mask].sum(dim=1)
+
+            # Normalize (just in case) and add epsilon for KL
+            t_probs_super = t_probs_super / (t_probs_super.sum(dim=-1, keepdim=True) + 1e-9)
+            
+            
+            teacher_choice = t_probs_super.argmax(dim=-1)
+            student_choice = s_logits.argmax(dim=-1)
+            batch_agreement = (teacher_choice == student_choice).float().mean()
+            self.agreements.append(batch_agreement)
+
+            # B. KL Divergence (Soft Probability Distance)
+            # KL(Teacher || Student)
+            s_log_probs = F.log_softmax(s_logits, dim=-1)
+            batch_kl = F.kl_div(s_log_probs, t_probs_super, reduction='batchmean')
+            self.kl_divs.append(batch_kl)
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if not self.agreements:
+            return
+
+        avg_agree = torch.stack(self.agreements).mean()
+        avg_kl = torch.stack(self.kl_divs).mean()
+
+        pl_module.log("distill/teacher_student_agreement", avg_agree, sync_dist=True)
+        pl_module.log("distill/kl_divergence", avg_kl, sync_dist=True)
+        
+        print(f"\n[Distillation Report] Agreement: {avg_agree:.2%} | KL: {avg_kl:.4f}")
