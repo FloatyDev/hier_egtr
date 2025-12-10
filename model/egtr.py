@@ -1102,7 +1102,6 @@ class SceneGraphGenerationLoss(nn.Module):
         gt_classes_fine = active_indices[:, 2]  # (K,)
         target_super = self.orig2fam[gt_classes_fine]  # (K,)
 
-        # self.super_loss must be nn.CrossEntropyLoss(weight=..., reduction='none')
         loss_ce = self.super_loss(logits_super_active, target_super).mean()
 
         # KL Divergence
@@ -1112,24 +1111,19 @@ class SceneGraphGenerationLoss(nn.Module):
             probs_teacher_super = torch.zeros_like(logits_super_active)
             for fam_id in range(3):
                 mask = self.orig2fam == fam_id
-                # Sum probabilities of all children in this family
+                # sum probabilities of all children in this family
                 probs_teacher_super[:, fam_id] = probs_fine[:, mask].sum(dim=1)
 
             probs_teacher_super = probs_teacher_super / (
                 probs_teacher_super.sum(dim=1, keepdim=True) + 1e-6
             )
 
-        # Student Log-Probs
         log_probs_student = F.log_softmax(logits_super_active, dim=1)
 
-        # KL Div: sum(P_teach * (log P_teach - log P_stud))
-        # reduction='none' so we can apply adaptive weights
         loss_distill = F.kl_div(
             log_probs_student, probs_teacher_super, reduction="batchmean"
         )
 
-        # --- C. Total Loss ---
-        # You can tune alpha (e.g., 1.0)
         alpha = 1.0
         total_loss = loss_ce + (alpha * loss_distill)
 
