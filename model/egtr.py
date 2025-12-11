@@ -139,7 +139,7 @@ class ExpertRelationClassifier(nn.Module):
         self,
         input_dim=512,
         hidden_dim=256,
-        num_layers=3,
+        num_hidden_layers=3,
     ):
         super().__init__()
 
@@ -148,7 +148,7 @@ class ExpertRelationClassifier(nn.Module):
 
         self.shared_layers = nn.ModuleList()
         self.shared_layers.append(nn.Linear(input_dim, hidden_dim))
-        for _ in range(num_layers - 2):
+        for _ in range(num_hidden_layers - 2):
             self.shared_layers.append(nn.Linear(hidden_dim, hidden_dim))
 
         # Heads
@@ -474,12 +474,10 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
         self.rel_predictor_gate = nn.Linear(2 * config.d_model, 1)
 
         if self.config.hierarchical:
-            self.rel_predictor = DualHeadRelationClassifier(
+            self.rel_predictor = ExpertRelationClassifier(
                 input_dim=2 * config.d_model,
                 hidden_dim=config.d_model,
-                num_fine_classes=50,
-                num_super_classes=3,
-                num_layers=3,
+                num_hidden_layers=3
             )
         else:
             self.rel_predictor = DeformableDetrMLPPredictionHead(
@@ -1244,7 +1242,7 @@ class SceneGraphGenerationLoss(nn.Module):
             zero = torch.tensor(0.0, device=target_rel.device)
             return {
                 "loss_rel": zero,
-                "loss_gate": zero,
+                "loss_super": zero,
                 "loss_geo": zero,
                 "loss_poss": zero,
                 "loss_sem": zero,
@@ -1252,16 +1250,16 @@ class SceneGraphGenerationLoss(nn.Module):
 
         i, j = active_indices[:, 0], active_indices[:, 1]
         gt_global_idx = active_indices[:, 2]  # (K,) 0-49
-        gt_family = self.global2family[gt_global_idx]  # (K,) 0, 1, 2
+        gt_family = self.orig2fam[gt_global_idx]  # (K,) 0, 1, 2
         gt_local = self.global2local[gt_global_idx]  # (K,) 0-N
 
         loss_sum = 0
         stats = {}
 
         pred_super = output_dict["super"][i, j]  # (K, 3)
-        l_gate = self.super_loss(pred_super, gt_family)
-        loss_sum += l_gate
-        stats["loss_super"] = l_gate.detach()
+        l_super = self.super_loss(pred_super, gt_family).mean()
+        loss_sum += l_super
+        stats["loss_super"] = l_super.detach()
 
         def compute_expert(name, family_id):
             mask = gt_family == family_id
@@ -1287,12 +1285,12 @@ class SceneGraphGenerationLoss(nn.Module):
     def loss_relations(self, outputs, targets, indices, matching_costs, num_boxes):
         losses = []
         connect_losses = []
-        geo_losses = []
-        sem_losses = []
-        poss_losses = []
-        super_losses = []
-        rel_ce_losses = []
-        rel_distill_losses = []
+        expert_logs = {
+            "loss_super": [],
+            "loss_geo": [],
+            "loss_poss": [],
+            "loss_sem": []
+        }
         for i, ((src_index, target_index), target, matching_cost) in enumerate(
             zip(indices, targets, matching_costs)
         ):
@@ -1333,23 +1331,18 @@ class SceneGraphGenerationLoss(nn.Module):
             loss = self.connectivity_loss(pred_connectivity, target_connect)
             connect_losses.append(loss)
 
-            if self.hierarchical and isinstance(outputs["pred_rel"], tuple):
-                raw_pred_fine, raw_pred_super = outputs["pred_rel"]
-
-                pred_fine = raw_pred_fine[i, full_src_index][:, full_src_index]
-                pred_super = raw_pred_super[i, full_src_index][:, full_src_index]
-
-                loss_distill_dict = self._loss_relations_distillation(
-                    pred_fine,
-                    pred_super,
-                    target_rel,
-                )
-
-                rel_ce_losses.append(loss_distill_dict["loss_rel_ce"])
-                rel_distill_losses.append(loss_distill_dict["loss_rel_distill"])
-                # The dictionary contains the summed loss
-                losses.append(loss_distill_dict["loss_rel"])
-
+            if self.hierarchical and isinstance(outputs["pred_rel"], dict):
+                pred_rel_dict = {
+                        k: v[i, full_src_index][:, full_src_index] 
+                        for k, v in outputs["pred_rel"].items()
+                    }
+                
+                expert_stats = self._loss_experts(pred_rel_dict, target_rel)
+                
+                losses.append(expert_stats["loss_rel"])
+                for k in expert_logs:
+                    if k in expert_stats:
+                        expert_logs[k].append(expert_stats[k])
             else:
                 pred_rel = outputs["pred_rel"][i, full_src_index][:, full_src_index]
                 if self.model_training:
@@ -1377,17 +1370,14 @@ class SceneGraphGenerationLoss(nn.Module):
                 if connect_losses
                 else torch.tensor(0.0, device=outputs["logits"].device)
             ),
-            "loss_rel_ce": (
-                torch.stack(rel_ce_losses).mean()
-                if connect_losses
-                else torch.tensor(0.0, device=outputs["logits"].device)
-            ),
-            "loss_rel_distill": (
-                torch.stack(rel_distill_losses).mean()
-                if connect_losses
-                else torch.tensor(0.0, device=outputs["logits"].device)
-            ),
         }
+
+        for k, v_list in expert_logs.items():
+                if v_list:
+                    main_loss_dict[k] = torch.stack(v_list).mean()
+                else:
+                    main_loss_dict[k] = torch.tensor(0.0)
+
         return main_loss_dict
 
     def _select_relation_indices(

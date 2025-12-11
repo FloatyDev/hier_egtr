@@ -717,11 +717,11 @@ class SuperRelationConfusionMatrix(pl.Callback):
     def __init__(self, id2label, device="cpu"):
         super().__init__()
         self.super_cats = ["Geometric", "Possessive", "Semantic"]
+        # Ensure mapping is available
         self.orig2fam = torch.tensor(get_super_rel_map(), device=device)
 
         self.preds = []
         self.targets = []
-
         from model.deformable_detr import DeformableDetrHungarianMatcher
 
         self.matcher = DeformableDetrHungarianMatcher(
@@ -729,7 +729,6 @@ class SuperRelationConfusionMatrix(pl.Callback):
         )
 
     def on_validation_epoch_start(self, trainer, pl_module):
-        # Reset storage at start of epoch
         self.preds = []
         self.targets = []
         self.orig2fam = self.orig2fam.to(pl_module.device)
@@ -737,42 +736,45 @@ class SuperRelationConfusionMatrix(pl.Callback):
     def on_validation_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
     ):
-        """
-        outputs: The dict returned from the updated validation_step
-        """
         model_out = outputs["outputs"] 
         targets = outputs["targets"]
 
         pred_rel = model_out["pred_rel"]
-        if isinstance(pred_rel, tuple):
-            pred_super = pred_rel[1] 
+  
+        if isinstance(pred_rel, dict):
+            pred_logits = pred_rel["super"]
         else:
-            pred_super = pred_rel
+            pred_logits = pred_rel
 
         outputs_for_matcher = {
             "logits": model_out["logits"],
             "pred_boxes": model_out["pred_boxes"]
         }
 
-        indices, _ = self.matcher(outputs_for_matcher, targets)  # <--- CHANGED THIS LINE
+        indices, _ = self.matcher(outputs_for_matcher, targets)
 
         for i, (src_idx, tgt_idx) in enumerate(indices):
-            rel_logits_matched = pred_super[i][src_idx][:, src_idx]
-
+            rel_logits_matched = pred_logits[i][src_idx][:, src_idx]
             tgt_rel_matrix = targets[i]["rel"][tgt_idx][:, tgt_idx]
 
-            # Sum over 50 classes to find active edges
             active_mask = tgt_rel_matrix.sum(dim=-1) > 0 
-
             if not active_mask.any():
                 continue
 
-            active_logits = rel_logits_matched[active_mask] # [K, 3]
-            pred_fam = active_logits.argmax(dim=-1)         # [K]
+            active_logits = rel_logits_matched[active_mask] # [K, num_classes]
+            
+            raw_preds = active_logits.argmax(dim=-1) # [K]
+            
+            if active_logits.shape[-1] == 50:
+                pred_fam = self.orig2fam[raw_preds]
+            else:
+                # If we have 3 classes (Raw Router), use directly
+                pred_fam = raw_preds
 
-            active_tgts = tgt_rel_matrix[active_mask]       # [K, 50]
-            gt_rel_idx = active_tgts.argmax(dim=-1)         # [K] (0-49)
-            gt_fam = self.orig2fam[gt_rel_idx]              # [K] (0-2)
+            # Ground Truth Mapping
+            active_tgts = tgt_rel_matrix[active_mask]       
+            gt_rel_idx = active_tgts.argmax(dim=-1)         
+            gt_fam = self.orig2fam[gt_rel_idx]              
 
             self.preds.append(pred_fam.cpu())
             self.targets.append(gt_fam.cpu())
@@ -781,19 +783,16 @@ class SuperRelationConfusionMatrix(pl.Callback):
         if not self.preds:
             return
 
-        # Concatenate all batches
         all_preds = torch.cat(self.preds).numpy()
         all_targets = torch.cat(self.targets).numpy()
 
-        # Compute Matrix
         cm = confusion_matrix(
             all_targets,
             all_preds,
             labels=[0, 1, 2],
-            normalize="true",  # Normalize rows (True labels) to sum to 1
+            normalize="true",
         )
 
-        # Plot
         fig, ax = plt.subplots(figsize=(8, 6), dpi=120)
         sns.heatmap(
             cm,
@@ -805,23 +804,18 @@ class SuperRelationConfusionMatrix(pl.Callback):
             ax=ax,
         )
         ax.set_ylabel("True Label")
-        ax.set_xlabel("Predicted Label")
+        ax.set_xlabel("Predicted Label (Fused System)")
         ax.set_title(f"Super-Relation Confusion Matrix (Epoch {trainer.current_epoch})")
 
-        # Log to TensorBoard/WandB
         if trainer.logger:
-            # Handle multiple loggers (Tensorboard + WandB)
             loggers = (
                 trainer.loggers if hasattr(trainer, "loggers") else [trainer.logger]
             )
             for logger in loggers:
                 if isinstance(logger, pl.loggers.WandbLogger):
                     import wandb
-
                     logger.experiment.log({"val/confusion_matrix": wandb.Image(fig)})
-
         plt.close(fig)
-        
 class TeacherStudentAgreementCallback(pl.Callback):
     """
     Validates Feature Learning by comparing Student predictions against 
@@ -868,7 +862,7 @@ class TeacherStudentAgreementCallback(pl.Callback):
             "pred_boxes": model_out["pred_boxes"]
         }
         
-        indices = self.matcher(outputs_for_matcher, targets)
+        indices, _ = self.matcher(outputs_for_matcher, targets)
 
         for i, (src_idx, tgt_idx) in enumerate(indices):
             

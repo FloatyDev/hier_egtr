@@ -427,16 +427,6 @@ class SGG(pl.LightningModule):
         )
         loss = outputs.loss
         loss_dict = outputs.loss_dict
-<<<<<<< HEAD
-        del outputs
-        return loss, loss_dict
-
-    def training_step(self, batch, batch_idx):
-        loss, loss_dict = self.common_step(batch, batch_idx)
-        # logs metrics for each training_step,
-        # and the average across the epoch
-        # Log metrics directly with epoch aggregation
-=======
 
         return loss, loss_dict, outputs
     
@@ -485,7 +475,6 @@ class SGG(pl.LightningModule):
                     self.log("grads/debug_norm_total", norm_total, prog_bar=True, sync_dist=True)
 
         # Log standard metrics
->>>>>>> 480750b (feat(distillation): enhance evaluation and training processes)
         self.log("training_loss", loss, on_step=True, on_epoch=True, sync_dist=True)
         for k, v in loss_dict.items():
             self.log(f"training_{k}", v, on_step=True, on_epoch=True, sync_dist=True)
@@ -528,34 +517,6 @@ class SGG(pl.LightningModule):
 
         return {"outputs": outputs, "targets": batch["labels"]}
 
-<<<<<<< HEAD
-        log_dict = {
-            "step": torch.tensor(self.global_step, dtype=torch.float32),
-            "epoch": torch.tensor(self.current_epoch, dtype=torch.float32),
-        }
-        # aggregate metrics across batches
-        for k in self.validation_step_outputs[0].keys():
-            log_dict[f"validation_" + k] = (
-                torch.stack([x[k] for x in self.validation_step_outputs]).mean().item()
-            )
-        self.log_dict(log_dict, on_epoch=True)
-        self.validation_step_outputs.clear()
-    # def on_validation_epoch_end(self):
-    #    if not self.validation_step_outputs:
-    #        return
-
-    #    log_dict = {}
-
-    #    # aggregate metrics across batches
-    #    for k in self.validation_step_outputs[0].keys():
-    #        log_dict[f"validation_" + k] = (
-    #            torch.stack([x[k] for x in self.validation_step_outputs]).mean().item()
-    #        )
-    #    self.log_dict(log_dict, sync_dist=True)
-    #    self.validation_step_outputs.clear()
-
-=======
->>>>>>> 480750b (feat(distillation): enhance evaluation and training processes)
     @rank_zero_only
     def on_train_start(self) -> None:
         if hasattr(self, "logger") and self.logger is not None:
@@ -1000,7 +961,10 @@ if __name__ == "__main__":
 
     # initialize wandblogger
     wandb_logger = WandbLogger(
-        project="hier-egtr", log_model=False, save_dir="./logs", name=name
+        project="hier-egtr_distill_training_perm",
+        log_model=False,
+        save_dir="./logs",
+        name=name,
     )
     logger_list = [tensorboard_logger, wandb_logger]
     if os.path.exists(f"{tensorboard_logger.log_dir}/checkpoints"):
@@ -1127,10 +1091,6 @@ if __name__ == "__main__":
                 print("### Main training")
             if ckpt_path is not None:
                 print(f"### Resume training from {ckpt_path}")
-<<<<<<< HEAD
-=======
-
->>>>>>> 3485adb (feat: perform student-teacher training)
             trainer.fit(module, ckpt_path=ckpt_path)
 
             wandb.finish()
