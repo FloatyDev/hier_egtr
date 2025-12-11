@@ -45,7 +45,6 @@ def evaluate(
     model,
     dataloader,
     num_labels,
-    multiple_sgg_evaluator=None,
     single_sgg_evaluator=None,
     oi_evaluator=None,
     coco_evaluator=None,
@@ -57,13 +56,13 @@ def evaluate(
     metric_dict = {}
     model.eval()
 
-    family_names = ["geometric", "possessive", "semantic"]
-    family_sgg_evaluator_list = []
+    rel_categories = dataloader.dataset.rel_categories
+    single_sgg_evaluator_list = []
 
     # Initialize per-category evaluators
-    if family_sgg_evaluator is not None:
-        for index, name in enumerate(family_names):
-            family_sgg_evaluator_list.append(
+    if single_sgg_evaluator is not None:
+        for index, name in enumerate(rel_categories):
+            single_sgg_evaluator_list.append(
                 (
                     index,
                     name,
@@ -89,19 +88,17 @@ def evaluate(
         evaluate_batch(
             outputs,
             targets,
-            family_sgg_evaluator,
-            family_sgg_evaluator_list,
+            single_sgg_evaluator,
+            single_sgg_evaluator_list,
             num_labels,
         )
- 
+
         if coco_evaluator is not None:
             orig_target_sizes = torch.stack(
                 [target["orig_size"] for target in targets], dim=0
             ).to(model.device)
 
-            results = feature_extractor.post_process(
-                outputs, orig_target_sizes
-            )
+            results = feature_extractor.post_process(outputs, orig_target_sizes)
 
             res = {
                 target["image_id"].item(): output
@@ -115,18 +112,10 @@ def evaluate(
         coco_evaluator.summarize()
         metric_dict.update({"AP50": coco_evaluator.coco_eval["bbox"].stats[1]})
 
-    if family_sgg_evaluator is not None:
- 
-        recall = family_sgg_evaluator["sgdet"].print_stats()
+    if single_sgg_evaluator_list is not None:
 
-        mean_recall = calculate_mR_from_evaluator_list(
-            multiple_sgg_evaluator_list, "sgdet", multiple_preds=True
-        )
-        metric_dict.update(recall)
-        metric_dict.update(mean_recall)
+        recall = single_sgg_evaluator_list["sgdet"].print_stats()
 
-    if single_sgg_evaluator is not None:
-        recall = single_sgg_evaluator["sgdet"].print_stats()
         mean_recall = calculate_mR_from_evaluator_list(
             single_sgg_evaluator_list, "sgdet", multiple_preds=False
         )
@@ -234,12 +223,8 @@ if __name__ == "__main__":
     )
 
     # Evaluator
-    multiple_sgg_evaluator = None
-    single_sgg_evaluator = None
-    if args.eval_multiple_preds:
-        multiple_sgg_evaluator = BasicSceneGraphEvaluator.all_modes(multiple_preds=True)
-    if args.eval_single_preds:
-        single_sgg_evaluator = BasicSceneGraphEvaluator.all_modes(multiple_preds=False)
+    if args.eval_single_preds:  # Use this flag for graph constraint evaluation
+        singe_sgg_evaluator = BasicSceneGraphEvaluator.all_modes(multiple_preds=False)
 
     # Model
     config = DeformableDetrConfig.from_pretrained(args.artifact_path)
@@ -272,7 +257,7 @@ if __name__ == "__main__":
         else:
             new_state_dict[k] = v
 
-    missing, unexpected = model.load_state_dict(new_state_dict,strict=False)
+    missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
     model.cuda()
 
     # FPS
@@ -284,8 +269,7 @@ if __name__ == "__main__":
             model,
             test_dataloader,
             max(id2label.keys()) + 1,
-            multiple_sgg_evaluator,
-            single_sgg_evaluator,
+            singe_sgg_evaluator,
             oi_evaluator,
             coco_evaluator,
             feature_extractor,

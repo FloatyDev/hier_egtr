@@ -48,6 +48,29 @@ seed_everything(42, workers=True)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 torch.set_float32_matmul_precision("medium")
 
+def stitch_logits(output_dict, orig2fam_map, device):
+    """
+    Reconstructs the full (B, N, N, 50) logit tensor from the hierarchical dict.
+    """
+    logits_super = output_dict["super"]
+    B, N, N_q, _ = logits_super.shape
+    num_fine_classes = 50 
+    final_logits = torch.full((B, N, N_q, num_fine_classes), -1000.0, device=device)
+
+    geo_indices = [i for i, x in enumerate(orig2fam_map) if x == 0]
+    poss_indices = [i for i, x in enumerate(orig2fam_map) if x == 1]
+    sem_indices = [i for i, x in enumerate(orig2fam_map) if x == 2]
+
+    if "geo" in output_dict:
+        final_logits[..., geo_indices] = output_dict["geo"]
+
+    if "poss" in output_dict:
+        final_logits[..., poss_indices] = output_dict["poss"]
+
+    if "sem" in output_dict:
+        final_logits[..., sem_indices] = output_dict["sem"]
+
+    return final_logits
 
 def build_flat_pred_rel(geo, poss, sem, orig2fam, orig2famidx):
     N = geo.shape[0]
@@ -71,9 +94,9 @@ def build_flat_pred_rel(geo, poss, sem, orig2fam, orig2famidx):
 def evaluate_batch(
     outputs,
     targets,
-    family_sgg_evaluator,
-    family_sgg_evaluator_list,
-    num_labels,
+    sgg_evaluator,
+    sgg_evaluator_list,
+    num_obj_labels,
     max_topk=100,
     hierarchical=True,
     partition_data=None,
@@ -87,23 +110,27 @@ def evaluate_batch(
             orig2famidx = get_orig2idx()[0]
 
     pred_rel_raw = outputs["pred_rel"]
-    if isinstance(pred_rel_raw, tuple):
-        pred_super_logits = pred_rel_raw[1] 
+
+    if isinstance(pred_rel_raw, dict):
+        # We are in Hierarchical Mode: Stitch to get (B, N, N, 50)
+        pred_rel_logits = stitch_logits(
+            pred_rel_raw, orig2fam, outputs["logits"].device
+        )
     else:
-        pred_super_logits = pred_rel_raw
+        pred_rel_logits = pred_rel_raw
 
     for j, target in enumerate(targets):
-        pred_obj_logits = outputs["logits"][j]      # (N, num_obj_classes)
-        pred_boxes = outputs["pred_boxes"][j]       # (N, 4)
-        pred_super_score_frame = pred_super_logits[j] # (N, N, 3)
+        pred_obj_logits = outputs["logits"][j]
+        pred_boxes = outputs["pred_boxes"][j]
 
-        pred_super_probs = torch.nn.functional.softmax(pred_super_score_frame, dim=-1)
+        pred_rel_frame_logits = pred_rel_logits[j]
+
+        pred_rel_probs = torch.nn.functional.softmax(pred_rel_frame_logits, dim=-1)
 
         orig_size = target["orig_size"].cpu()
 
-        pred_logits = outputs["logits"][j]
         obj_scores, pred_classes = torch.max(
-            pred_logits.softmax(-1)[:, :num_labels], -1
+            pred_obj_logits.softmax(-1)[:, :num_obj_labels], -1
         )
 
         sub_ob_scores = torch.outer(obj_scores, obj_scores)
@@ -112,15 +139,15 @@ def evaluate_batch(
         pred_boxes = outputs["pred_boxes"][j]
         if "pred_connectivity" in outputs:
             pred_connectivity = torch.clamp(outputs["pred_connectivity"][j], 0.0, 1.0)
-            pred_rel = torch.mul(pred_rel, pred_connectivity)
+            pred_rel_probs = pred_rel_probs * pred_connectivity
 
-
-        triplet_scores = torch.mul(pred_super_probs.max(-1)[0], sub_ob_scores)
+        rel_max_scores, _ = pred_rel_probs.max(dim=-1)
+        triplet_scores = sub_ob_scores * rel_max_scores
 
         pred_rel_inds = argsort_desc(triplet_scores.cpu().clone().numpy())[:max_topk, :]
 
         rel_scores = (
-            pred_super_probs.cpu()
+            pred_rel_probs.cpu()
             .clone()
             .numpy()[pred_rel_inds[:, 0], pred_rel_inds[:, 1]]
         )
@@ -128,29 +155,18 @@ def evaluate_batch(
         pred_entry = {
             "pred_boxes": rescale_bboxes(
                 pred_boxes.cpu(), torch.flip(orig_size, dims=[0])
-            ).clone().numpy(),
+            )
+            .clone()
+            .numpy(),
             "pred_classes": pred_classes.cpu().clone().numpy(),
             "obj_scores": obj_scores.cpu().clone().numpy(),
             "pred_rel_inds": pred_rel_inds,
-            "rel_scores": rel_scores, 
+            "rel_scores": rel_scores,
         }
 
         target_labels = target["class_labels"].cpu()
         target_boxes = target["boxes"].cpu()
-        target_rel = target["rel"].cpu().nonzero() # [num_rels, 3] -> (s, o, predicate)
-
-        if target_rel.numel() > 0:
-            gt_rels_idx = target_rel[:, 2] # 0-49
-
-            gt_fam_idx = torch.tensor(orig2fam)[gt_rels_idx] 
-
-            gt_family_triplets = torch.stack(
-                (target_rel[:, 0], target_rel[:, 1], gt_fam_idx), dim=-1
-            )
-        else:
-            gt_family_triplets = torch.zeros(
-                (0, 3), dtype=torch.long, device=target_rel.device
-            )
+        target_rel = target["rel"].cpu().nonzero()
 
         gt_entry = {
             "gt_relations": target_rel.clone().numpy(),
@@ -160,47 +176,19 @@ def evaluate_batch(
             "gt_classes": target_labels.clone().numpy(),
         }
 
-        if multiple_sgg_evaluator is not None:
-            triplet_scores = torch.mul(pred_rel, sub_ob_scores.unsqueeze(-1))
-            pred_rel_inds = argsort_desc(triplet_scores.cpu().clone().numpy())[
-                :max_topk, :
-            ]  # [pred_rels, 3(s,o,p)]
-            rel_scores = (
-                pred_rel.cpu()
-                .clone()
-                .numpy()[pred_rel_inds[:, 0], pred_rel_inds[:, 1], pred_rel_inds[:, 2]]
-            )  # [pred_rels]
+        if sgg_evaluator is not None:
+            sgg_evaluator["sgdet"].evaluate_scene_graph_entry(gt_entry, pred_entry)
 
-            pred_entry = {
-                "pred_boxes": rescale_bboxes(
-                    pred_boxes.cpu(), torch.flip(orig_size, dims=[0])
-                )
-                .clone()
-                .numpy(),
-                "pred_classes": pred_classes.cpu().clone().numpy(),
-                "obj_scores": obj_scores.cpu().clone().numpy(),
-                "pred_rel_inds": pred_rel_inds,
-                "rel_scores": rel_scores,
-            }
-            multiple_sgg_evaluator["sgdet"].evaluate_scene_graph_entry(
-                gt_entry, pred_entry
-            )
-
-            for pred_id, _, evaluator_rel in multiple_sgg_evaluator_list:
+        if sgg_evaluator_list is not None:
+            for pred_id, _, evaluator_rel in sgg_evaluator_list:
                 gt_entry_rel = gt_entry.copy()
-
-        if family_sgg_evaluator is not None:
-            family_sgg_evaluator["sgdet"].evaluate_scene_graph_entry(gt_entry, pred_entry)
-
-        if family_sgg_evaluator_list is not None:
-            for pred_id, _, evaluator_rel in family_sgg_evaluator_list:
-                gt_entry_rel = gt_entry.copy()
-                # Filter GT for specific family ID (0, 1, or 2)
                 mask = np.in1d(gt_entry_rel["gt_relations"][:, -1], pred_id)
                 gt_entry_rel["gt_relations"] = gt_entry_rel["gt_relations"][mask, :]
                 if gt_entry_rel["gt_relations"].shape[0] == 0:
                     continue
-                evaluator_rel["sgdet"].evaluate_scene_graph_entry(gt_entry_rel, pred_entry)
+                evaluator_rel["sgdet"].evaluate_scene_graph_entry(
+                    gt_entry_rel, pred_entry
+                )
 
 
 def collate_fn(batch, feature_extractor):
@@ -328,7 +316,9 @@ class SGG(pl.LightningModule):
         # only train relation_head
         if train_relation_head:
             if not main_trained:
-                assert artifact_path, "Must provide artifact_path to the Super-Classifier checkpoint"
+                assert (
+                    artifact_path
+                ), "Must provide artifact_path to the Super-Classifier checkpoint"
                 print(f"Loading Super-Classifier weights from: {artifact_path}")
 
                 ckpt_path = sorted(
@@ -347,16 +337,26 @@ class SGG(pl.LightningModule):
                         new_state_dict[k] = v
                 state_dict = new_state_dict
 
-                missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
+                missing, unexpected = self.model.load_state_dict(
+                    state_dict, strict=False
+                )
 
                 print("\n[sgg] Weight Loading Report:")
-                print(f"   - Missing Keys (Should be Experts): {[k for k in missing if 'expert' in k]}")
-                print(f"   - Unexpected Keys (Should be Fine Head): {[k for k in unexpected if 'fine_head' in k]}")
+                print(
+                    f"   - Missing Keys (Should be Experts): {[k for k in missing if 'expert' in k]}"
+                )
+                print(
+                    f"   - Unexpected Keys (Should be Fine Head): {[k for k in unexpected if 'fine_head' in k]}"
+                )
 
                 if any("super_head" in m for m in missing):
-                    print("WARNING: 'super_head' missing! It will be random (Distillation lost).")
+                    print(
+                        "WARNING: 'super_head' missing! It will be random (Distillation lost)."
+                    )
                 if any("shared_layers" in m for m in missing):
-                    print("CRITICAL WARNING: 'shared_layers' missing! Feature extractor is random.")
+                    print(
+                        "CRITICAL WARNING: 'shared_layers' missing! Feature extractor is random."
+                    )
 
             print("\n[sgg] Configuring Gradients...")
 
@@ -364,10 +364,10 @@ class SGG(pl.LightningModule):
                 p.requires_grad = False
 
             trainable_modules = [
-                "rel_predictor.super_head", 
-                "rel_predictor.expert_geo", 
-                "rel_predictor.expert_poss", 
-                "rel_predictor.expert_sem"
+                "rel_predictor.super_head",
+                "rel_predictor.expert_geo",
+                "rel_predictor.expert_poss",
+                "rel_predictor.expert_sem",
             ]
 
             for n, p in self.model.named_parameters():
@@ -376,9 +376,15 @@ class SGG(pl.LightningModule):
 
             trainable = [n for n, p in self.model.named_parameters() if p.requires_grad]
 
-            assert any("expert_geo" in t for t in trainable), "Experts are not trainable!"
-            assert any("super_head" in t for t in trainable), "Super Head is frozen (Check config)!"
-            assert not any("shared_layers" in t for t in trainable), "Shared Layers leaked into training!"
+            assert any(
+                "expert_geo" in t for t in trainable
+            ), "Experts are not trainable!"
+            assert any(
+                "super_head" in t for t in trainable
+            ), "Super Head is frozen (Check config)!"
+            assert not any(
+                "shared_layers" in t for t in trainable
+            ), "Shared Layers leaked into training!"
 
             count_trainable(model=self.model, debugging=True)
             print(f"[sgg] Final Trainable Parameter Count: {len(trainable)}")
@@ -429,50 +435,89 @@ class SGG(pl.LightningModule):
         loss_dict = outputs.loss_dict
 
         return loss, loss_dict, outputs
-    
+
     def training_step(self, batch, batch_idx):
         # 1. Run the shared forward pass
         loss, loss_dict, outputs = self.common_step(batch, batch_idx)
 
         if batch_idx % 50 == 0 and loss.requires_grad:
-            
+
             trainable_params = [p for p in self.model.parameters() if p.requires_grad]
 
             if trainable_params:
-                if "loss_rel_ce" in loss_dict and loss_dict["loss_rel_ce"].requires_grad:
+                if (
+                    "loss_rel_ce" in loss_dict
+                    and loss_dict["loss_rel_ce"].requires_grad
+                ):
                     grads_ce = torch.autograd.grad(
-                        loss_dict["loss_rel_ce"], 
-                        trainable_params, 
-                        retain_graph=True, 
-                        allow_unused=True
+                        loss_dict["loss_rel_ce"],
+                        trainable_params,
+                        retain_graph=True,
+                        allow_unused=True,
                     )
                     norm_ce = torch.norm(
-                        torch.stack([torch.norm(g.detach(), 2) for g in grads_ce if g is not None])
+                        torch.stack(
+                            [
+                                torch.norm(g.detach(), 2)
+                                for g in grads_ce
+                                if g is not None
+                            ]
+                        )
                     )
-                    self.log("grads/debug_norm_rel_ce", norm_ce, prog_bar=False, sync_dist=True)
+                    self.log(
+                        "grads/debug_norm_rel_ce",
+                        norm_ce,
+                        prog_bar=False,
+                        sync_dist=True,
+                    )
 
-                if "loss_rel_distill" in loss_dict and loss_dict["loss_rel_distill"].requires_grad:
+                if (
+                    "loss_rel_distill" in loss_dict
+                    and loss_dict["loss_rel_distill"].requires_grad
+                ):
                     grads_distill = torch.autograd.grad(
-                        loss_dict["loss_rel_distill"], 
-                        trainable_params, 
-                        retain_graph=True, 
-                        allow_unused=True
+                        loss_dict["loss_rel_distill"],
+                        trainable_params,
+                        retain_graph=True,
+                        allow_unused=True,
                     )
                     norm_distill = torch.norm(
-                        torch.stack([torch.norm(g.detach(), 2) for g in grads_distill if g is not None])
+                        torch.stack(
+                            [
+                                torch.norm(g.detach(), 2)
+                                for g in grads_distill
+                                if g is not None
+                            ]
+                        )
                     )
-                    self.log("grads/debug_norm_rel_distill", norm_distill, prog_bar=False, sync_dist=True)
+                    self.log(
+                        "grads/debug_norm_rel_distill",
+                        norm_distill,
+                        prog_bar=False,
+                        sync_dist=True,
+                    )
 
                     grads_total = torch.autograd.grad(
-                        loss, 
-                        trainable_params, 
-                        retain_graph=True, # Must retain for the actual optimizer.step()!
-                        allow_unused=True
+                        loss,
+                        trainable_params,
+                        retain_graph=True,  # Must retain for the actual optimizer.step()!
+                        allow_unused=True,
                     )
                     norm_total = torch.norm(
-                        torch.stack([torch.norm(g.detach(), 2) for g in grads_total if g is not None])
+                        torch.stack(
+                            [
+                                torch.norm(g.detach(), 2)
+                                for g in grads_total
+                                if g is not None
+                            ]
+                        )
                     )
-                    self.log("grads/debug_norm_total", norm_total, prog_bar=True, sync_dist=True)
+                    self.log(
+                        "grads/debug_norm_total",
+                        norm_total,
+                        prog_bar=True,
+                        sync_dist=True,
+                    )
 
         # Log standard metrics
         self.log("training_loss", loss, on_step=True, on_epoch=True, sync_dist=True)
