@@ -328,85 +328,60 @@ class SGG(pl.LightningModule):
         # only train relation_head
         if train_relation_head:
             if not main_trained:
-                assert artifact_path, "have to give artifact_path"
-                print(f"Loading checkpoint config from: {artifact_path}")
-
-                try:
-                    ckpt_config = DeformableDetrConfig.from_pretrained(artifact_path)
-                    ckpt_is_hierarchical = ckpt_config.hierarchical
-                    print(f"Checkpoint config loaded. Checkpoint is hierarchical: {ckpt_is_hierarchical}")
-                except Exception as e:
-                    print(f"Warning: Could not load config from {artifact_path}. Assuming flat model. Error: {e}")
-                    ckpt_is_hierarchical = False
+                assert artifact_path, "Must provide artifact_path to the Super-Classifier checkpoint"
+                print(f"Loading Super-Classifier weights from: {artifact_path}")
 
                 ckpt_path = sorted(
                     glob(f"{args.artifact_path}/checkpoints/epoch=*.ckpt"),
                     key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
                 )[-1]
+                print(f"Found checkpoint: {ckpt_path}")
 
                 state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
+
                 new_state_dict = {}
-
-  
-                teacher_num_layers = 3 
-                teacher_last_layer_idx = teacher_num_layers - 1
-
-                print("DEBUG: Starting Weight Mapping...")
                 for k, v in state_dict.items():
-                    if "rel_predictor." in k and "layers." in k and "rel_predictor_gate" not in k and not ckpt_is_hierarchical:
-                        try:
-                            part_after_layers = k.split("layers.")[1]
-                            layer_idx = int(part_after_layers.split(".")[0])
-
-                            if layer_idx == teacher_last_layer_idx:
-                                new_k = k.replace(f"layers.{layer_idx}", "fine_head")
-                                new_state_dict[new_k] = v
-
-                            elif layer_idx < teacher_last_layer_idx:
-                                new_k = k.replace(f"layers.{layer_idx}", f"shared_layers.{layer_idx}")
-                                new_state_dict[new_k] = v
-
-                            else:
-                                print(f"Warning: Found layer index {layer_idx} higher than max expected {teacher_last_layer_idx}. Ignoring.")
-
-                        except ValueError:
-                            new_state_dict[k] = v
+                    if k.startswith("model."):
+                        new_state_dict[k[6:]] = v
                     else:
                         new_state_dict[k] = v
-
                 state_dict = new_state_dict
 
-                for k in list(state_dict.keys()):
-                     if k.startswith("model."):
-                        state_dict[k[6:]] = state_dict.pop(k)
+                missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
 
-                missing, unexpected = self.model.load_state_dict(
-                    state_dict, strict=False
-                )
-                print("[sgg] missing keys (Should include super_head):", missing)
-                print("[sgg] unexpected keys:", unexpected)
+                print("\n[sgg] Weight Loading Report:")
+                print(f"   - Missing Keys (Should be Experts): {[k for k in missing if 'expert' in k]}")
+                print(f"   - Unexpected Keys (Should be Fine Head): {[k for k in unexpected if 'fine_head' in k]}")
 
-                if any("shared_layers.1" in m for m in missing):
-                    print("CRITICAL ERROR: shared_layers.1 is still missing! Check checkpoint indices.")
+                if any("super_head" in m for m in missing):
+                    print("WARNING: 'super_head' missing! It will be random (Distillation lost).")
+                if any("shared_layers" in m for m in missing):
+                    print("CRITICAL WARNING: 'shared_layers' missing! Feature extractor is random.")
 
-      
+            print("\n[sgg] Configuring Gradients...")
+
             for p in self.model.parameters():
                 p.requires_grad = False
 
-            
-            allow = ("rel_predictor.super_head",)
+            trainable_modules = [
+                "rel_predictor.super_head", 
+                "rel_predictor.expert_geo", 
+                "rel_predictor.expert_poss", 
+                "rel_predictor.expert_sem"
+            ]
 
             for n, p in self.model.named_parameters():
-                if any(x in n for x in allow):
+                if any(t in n for t in trainable_modules):
                     p.requires_grad = True
 
             trainable = [n for n, p in self.model.named_parameters() if p.requires_grad]
-            for t in trainable:
-                assert "fine_head" not in t, "Error: Fine Head (Teacher) should be frozen!"
-                assert "shared_layers" not in t, "Error: Shared Layers should be frozen!"
+
+            assert any("expert_geo" in t for t in trainable), "Experts are not trainable!"
+            assert any("super_head" in t for t in trainable), "Super Head is frozen (Check config)!"
+            assert not any("shared_layers" in t for t in trainable), "Shared Layers leaked into training!"
 
             count_trainable(model=self.model, debugging=True)
-            print(f"[sgg] trainable parameter count: {len(trainable)}")
+            print(f"[sgg] Final Trainable Parameter Count: {len(trainable)}")
 
         if main_trained:
             state_dict = torch.load(main_trained, map_location="cpu")["state_dict"]

@@ -41,7 +41,7 @@ from model.util import (
     get_orig2idx,
     get_super_frequency_bias,
     get_super_root_frequency_bias,
-    get_class_weights
+    get_class_weights,
 )
 
 from .deformable_detr import (
@@ -126,6 +126,104 @@ class DetrSceneGraphGenerationOutput(ModelOutput):
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
+
+
+class ExpertRelationClassifier(nn.Module):
+    """
+    Hierarchical Mixture of Experts.
+    - Super Head: Gates the families (Geometric, Possessive, Semantic).
+    - Expert Heads: Predict fine-grained classes within their family.
+    """
+
+    def __init__(
+        self,
+        input_dim=512,
+        hidden_dim=256,
+        num_layers=3,
+    ):
+        super().__init__()
+
+        _, n_geo, n_poss, n_sem = get_orig2idx()
+        self.expert_counts = [n_geo, n_poss, n_sem]
+
+        self.shared_layers = nn.ModuleList()
+        self.shared_layers.append(nn.Linear(input_dim, hidden_dim))
+        for _ in range(num_layers - 2):
+            self.shared_layers.append(nn.Linear(hidden_dim, hidden_dim))
+
+        self.super_head = nn.Linear(hidden_dim, 3)
+
+        self.expert_geo = nn.Linear(hidden_dim, n_geo)
+        self.expert_poss = nn.Linear(hidden_dim, n_poss)
+        self.expert_sem = nn.Linear(hidden_dim, n_sem)
+        self.register_buffer("expert_map", self._build_inference_map())
+
+    def _build_inference_map(self):
+        mapping = get_super_rel_map()
+        return torch.tensor(mapping, dtype=torch.long)
+
+    def forward(self, features):
+        x = features
+        for layer in self.shared_layers:
+            x = F.relu(layer(x))
+
+        logits_super = self.super_head(x)  # (B, N, N, 3)
+
+        logits_geo = self.expert_geo(x)  # (B, N, N, n_geo)
+        logits_poss = self.expert_poss(x)  # (B, N, N, n_poss)
+        logits_sem = self.expert_sem(x)  # (B, N, N, n_sem)
+
+        return {
+            "super": logits_super,
+            "geo": logits_geo,
+            "poss": logits_poss,
+            "sem": logits_sem,
+        }
+
+    def combine_logits(self, output_dict):
+        """
+        Fuses Expert and Gate logits into a flat 50-class vector.
+        Score = Logits_Expert + Logits_Gate
+        """
+        logits_super = output_dict["super"]
+        device = logits_super.device
+
+        assert logits_super.dim() == 4, f"Expected 4D logits (B,N,N,3), got {logits_super.shape}"
+
+        gate_flat = logits_super.flatten(0, -2)
+
+        total_classes = sum(self.expert_counts)
+        assert total_classes == 50
+
+        final_logits = torch.full(
+            (gate_flat.shape[0], total_classes),
+            -1000.0,  # Mask value for inactive classes
+            device=device,
+        )
+
+        geo_logits = output_dict["geo"].flatten(0, -2)
+        gate_score = gate_flat[:, 0].unsqueeze(-1)  # (N, 1)
+
+        geo_indices = (self.expert_map == 0).nonzero(as_tuple=True)[0]
+        assert len(geo_indices) == geo_logits.shape[1]
+        final_logits[:, geo_indices] = geo_logits + gate_score
+
+        poss_logits = output_dict["poss"].flatten(0, -2)
+        gate_score = gate_flat[:, 1].unsqueeze(-1)
+
+        poss_indices = (self.expert_map == 1).nonzero(as_tuple=True)[0]
+        assert len(poss_indices) == poss_logits.shape[1]
+        final_logits[:, poss_indices] = poss_logits + gate_score
+
+        sem_logits = output_dict["sem"].flatten(0, -2)
+        gate_score = gate_flat[:, 2].unsqueeze(-1)
+
+        sem_indices = (self.expert_map == 2).nonzero(as_tuple=True)[0]
+        assert len(sem_indices) == sem_logits.shape[1]
+        final_logits[:, sem_indices] = sem_logits + gate_score
+
+        original_shape = logits_super.shape[:-1] + (total_classes,)
+        return final_logits.view(original_shape)
 
 
 class DualHeadRelationClassifier(nn.Module):
@@ -392,7 +490,7 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
                 hidden_dim=config.d_model,
                 num_fine_classes=50,
                 num_super_classes=3,
-                num_layers=3
+                num_layers=3,
             )
         else:
             self.rel_predictor = DeformableDetrMLPPredictionHead(
@@ -600,9 +698,7 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
                     freq_bias=self.super_freq_bias,
                 )
             else:
-                pred_rel = self.rel_predictor(
-                    gated_relation_source
-                )
+                pred_rel = self.rel_predictor(gated_relation_source)
 
         else:
             # Original flat prediction
@@ -917,14 +1013,16 @@ class SceneGraphGenerationLoss(nn.Module):
             self.super_relation_map = get_super_rel_map()
 
         if hierarchical:
-
             self.register_buffer(
                 "orig2fam",
                 torch.tensor(self.super_relation_map, dtype=torch.long),
                 persistent=True,
             )
             class_weights = get_class_weights(fg_matrix)
-            self.super_loss = nn.CrossEntropyLoss(weight=class_weights, reduction="none")
+            self.super_loss = nn.CrossEntropyLoss(
+                weight=class_weights, reduction="none"
+            )
+            self.loss_experts = nn.CrossEntropyLoss()
         else:
             # Original BCEWithLogitsLoss for flat mode
             self.rel_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
@@ -1133,6 +1231,84 @@ class SceneGraphGenerationLoss(nn.Module):
             "loss_rel_distill": loss_distill,
         }
 
+    def _loss_experts(self, output_dict, target_rel):
+        """
+        Computes 4 Cross Entropy Losses:
+        1. Super Head (Gate) vs Family Label
+        2. Geo Head vs Local Geo Label (Masked)
+        3. Poss Head vs Local Poss Label (Masked)
+        4. Sem Head vs Local Sem Label (Masked)
+        """
+        if self.model_training:
+            for k, v in output_dict.items():
+                if v.numel() > 0:
+                    is_prob = (v >= 0).all() and (v <= 1).all()
+                    if is_prob:
+                        # Check mean to distinguish from just all-positive logits
+                        if v.mean() < 0.5: 
+                             raise ValueError(f"CRITICAL: '{k}' outputs appear to be Probabilities (0-1), not Logits! CrossEntropy expects raw logits.")
+
+        active_indices = target_rel.nonzero(as_tuple=False) 
+        if active_indices.numel() == 0:
+            zero = torch.tensor(0.0, device=target_rel.device)
+            return {"loss_rel": zero, "loss_gate": zero, "loss_geo": zero, "loss_poss": zero, "loss_sem": zero}
+
+        i, j = active_indices[:, 0], active_indices[:, 1]
+        gt_global_idx = active_indices[:, 2] # (K,) 0-49
+
+        gt_family = self.global2family[gt_global_idx] # (K,) 0, 1, 2
+        gt_local = self.global2local[gt_global_idx]   # (K,) 0-N
+
+        loss_sum = 0
+        stats = {}
+
+        pred_super = output_dict["super"][i, j] # (K, 3)
+        l_gate = self.super_loss(pred_super, gt_family)
+        loss_sum += l_gate
+        stats["loss_gate"] = l_gate.detach()
+
+        mask_geo = (gt_family == 0)
+        if mask_geo.any():
+            pred_geo = output_dict["geo"][i, j][mask_geo]
+            target_geo = gt_local[mask_geo]
+
+            assert pred_geo.shape[0] == target_geo.shape[0]
+
+            l_geo = self.loss_experts(pred_geo, target_geo)
+            loss_sum += l_geo
+            stats["loss_geo"] = l_geo.detach()
+        else:
+            stats["loss_geo"] = torch.tensor(0.0, device=target_rel.device)
+
+        mask_poss = (gt_family == 1)
+        if mask_poss.any():
+            pred_poss = output_dict["poss"][i, j][mask_poss]
+            target_poss = gt_local[mask_poss]
+
+            assert pred_poss.shape[0] == target_poss.shape[0]
+
+            l_poss = self.loss_experts(pred_poss, target_poss)
+            loss_sum += l_poss
+            stats["loss_poss"] = l_poss.detach()
+        else:
+            stats["loss_poss"] = torch.tensor(0.0, device=target_rel.device)
+
+        mask_sem = (gt_family == 2)
+        if mask_sem.any():
+            pred_sem = output_dict["sem"][i, j][mask_sem]
+            target_sem = gt_local[mask_sem]
+
+            assert pred_sem.shape[0] == target_sem.shape[0]
+
+            l_sem = self.loss_experts(pred_sem, target_sem)
+            loss_sum += l_sem
+            stats["loss_sem"] = l_sem.detach()
+        else:
+            stats["loss_sem"] = torch.tensor(0.0, device=target_rel.device)
+
+        stats["loss_rel"] = loss_sum
+        return stats
+
     def loss_relations(self, outputs, targets, indices, matching_costs, num_boxes):
         losses = []
         connect_losses = []
@@ -1203,18 +1379,39 @@ class SceneGraphGenerationLoss(nn.Module):
                 pred_rel = outputs["pred_rel"][i, full_src_index][:, full_src_index]
                 if self.model_training:
                     loss = self._loss_relations(
-                        pred_rel, target_rel, full_matching_cost, 
-                        self.rel_sample_negatives, self.rel_sample_nonmatching
+                        pred_rel,
+                        target_rel,
+                        full_matching_cost,
+                        self.rel_sample_negatives,
+                        self.rel_sample_nonmatching,
                     )
                 else:
-                    loss = self._loss_relations(pred_rel, target_rel, full_matching_cost, None, None)
+                    loss = self._loss_relations(
+                        pred_rel, target_rel, full_matching_cost, None, None
+                    )
                 losses.append(loss)
 
         main_loss_dict = {
-            "loss_rel": torch.stack(losses).mean() if losses else torch.tensor(0.0, device=outputs["logits"].device),
-            "loss_connectivity": torch.stack(connect_losses).mean() if connect_losses else torch.tensor(0.0, device=outputs["logits"].device),
-            "loss_rel_ce": torch.stack(rel_ce_losses).mean() if connect_losses else torch.tensor(0.0, device=outputs["logits"].device),
-            "loss_rel_distill": torch.stack(rel_distill_losses).mean() if connect_losses else torch.tensor(0.0, device=outputs["logits"].device),
+            "loss_rel": (
+                torch.stack(losses).mean()
+                if losses
+                else torch.tensor(0.0, device=outputs["logits"].device)
+            ),
+            "loss_connectivity": (
+                torch.stack(connect_losses).mean()
+                if connect_losses
+                else torch.tensor(0.0, device=outputs["logits"].device)
+            ),
+            "loss_rel_ce": (
+                torch.stack(rel_ce_losses).mean()
+                if connect_losses
+                else torch.tensor(0.0, device=outputs["logits"].device)
+            ),
+            "loss_rel_distill": (
+                torch.stack(rel_distill_losses).mean()
+                if connect_losses
+                else torch.tensor(0.0, device=outputs["logits"].device)
+            ),
         }
         return main_loss_dict
 
