@@ -17,6 +17,7 @@ from torch import Tensor, nn
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
 
+
 def dice_loss(inputs, targets, num_boxes):
     """
     Compute the DICE loss, similar to generalized IOU for masks
@@ -300,7 +301,7 @@ def count_trainable(model, debugging=False):
 
 def get_super_rel_map():
     return [
-        #1-6: geometric
+        # 1-6: geometric
         0,  # 1 above -> geometric
         0,  # 2 accross -> geometric
         0,  # 3 against -> geometric
@@ -353,56 +354,56 @@ def get_super_rel_map():
         1,  # 49 wears -> possessive
         1,  # 50: with -> possessive
         # clip-text mapping
-        #2,
-        #2,
-        #2,
-        #2,
-        #2,
-        #2,
-        #0,
-        #0,
-        #2,
-        #2,
-        #0,
-        #0,
-        #0,
-        #0,
-        #0,
-        #2,
-        #2,
-        #0,
-        #0,
-        #2,
-        #0,
-        #2,
-        #0,
-        #1,
-        #0,
-        #1,
-        #0,
-        #0,
-        #2,
-        #2,
-        #2,
-        #0,
-        #2,
-        #0,
-        #0,
-        #2,
-        #0,
-        #1,
-        #2,
-        #1,
-        #0,
-        #2,
-        #2,
-        #0,
-        #0,
-        #0,
-        #0,
-        #0,
-        #0,
-        #2,
+        # 2,
+        # 2,
+        # 2,
+        # 2,
+        # 2,
+        # 2,
+        # 0,
+        # 0,
+        # 2,
+        # 2,
+        # 0,
+        # 0,
+        # 0,
+        # 0,
+        # 0,
+        # 2,
+        # 2,
+        # 0,
+        # 0,
+        # 2,
+        # 0,
+        # 2,
+        # 0,
+        # 1,
+        # 0,
+        # 1,
+        # 0,
+        # 0,
+        # 2,
+        # 2,
+        # 2,
+        # 0,
+        # 2,
+        # 0,
+        # 0,
+        # 2,
+        # 0,
+        # 1,
+        # 2,
+        # 1,
+        # 0,
+        # 2,
+        # 2,
+        # 0,
+        # 0,
+        # 0,
+        # 0,
+        # 0,
+        # 0,
+        # 2,
     ]
 
 
@@ -514,26 +515,27 @@ def get_super_root_frequency_bias(fg_matrix, eps=1e-12):
 
     return torch.from_numpy(np.log(probs))
 
+
 def get_class_weights(fg_matrix):
     """
     Calculates class weights to counteract the Geometric bias.
-    
+
     Args:
         fg_matrix: (Num_Obj, Num_Obj, 50) count matrix from dataset stats
-        beta: (Optional) Smoothing factor for "Effective Number of Samples" 
+        beta: (Optional) Smoothing factor for "Effective Number of Samples"
               closer to 1.0 = more aggressive re-balancing.
-              
+
     Returns:
         torch.Tensor: Shape (3,) weights for CrossEntropyLoss
     """
     # Sum over subject/object dimensions -> [50]
-    if hasattr(fg_matrix, 'sum'): # Handles both tensor and numpy
-         fine_counts = torch.tensor(fg_matrix.sum(axis=(0, 1)), dtype=torch.float32)
-    
+    if hasattr(fg_matrix, "sum"):  # Handles both tensor and numpy
+        fine_counts = torch.tensor(fg_matrix.sum(axis=(0, 1)), dtype=torch.float32)
+
     # Map to families [0, 1, 2]
     mapping = torch.tensor(get_super_rel_map(), device=fine_counts.device)
     family_counts = torch.zeros(3, device=fine_counts.device)
-    
+
     for i in range(3):
         mask = mapping == i
         family_counts[i] = fine_counts[mask].sum()
@@ -541,12 +543,14 @@ def get_class_weights(fg_matrix):
     # Formula: n_samples / (n_classes * count_class)
     total_samples = family_counts.sum()
     n_classes = 3
-    
+
     weights = total_samples / (n_classes * family_counts)
 
-    # weights = torch.clamp(weights, max=10.0) 
-    
+    # weights = torch.clamp(weights, max=10.0)
+
     return weights
+
+
 class GTTripletVis(pl.Callback):
     """
     Plot GT triplets straight from the batch that flows through training.
@@ -736,11 +740,11 @@ class SuperRelationConfusionMatrix(pl.Callback):
     def on_validation_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
     ):
-        model_out = outputs["outputs"] 
+        model_out = outputs["outputs"]
         targets = outputs["targets"]
 
         pred_rel = model_out["pred_rel"]
-  
+
         if isinstance(pred_rel, dict):
             pred_logits = pred_rel["super"]
         else:
@@ -748,7 +752,7 @@ class SuperRelationConfusionMatrix(pl.Callback):
 
         outputs_for_matcher = {
             "logits": model_out["logits"],
-            "pred_boxes": model_out["pred_boxes"]
+            "pred_boxes": model_out["pred_boxes"],
         }
 
         indices, _ = self.matcher(outputs_for_matcher, targets)
@@ -757,14 +761,14 @@ class SuperRelationConfusionMatrix(pl.Callback):
             rel_logits_matched = pred_logits[i][src_idx][:, src_idx]
             tgt_rel_matrix = targets[i]["rel"][tgt_idx][:, tgt_idx]
 
-            active_mask = tgt_rel_matrix.sum(dim=-1) > 0 
+            active_mask = tgt_rel_matrix.sum(dim=-1) > 0
             if not active_mask.any():
                 continue
 
-            active_logits = rel_logits_matched[active_mask] # [K, num_classes]
-            
-            raw_preds = active_logits.argmax(dim=-1) # [K]
-            
+            active_logits = rel_logits_matched[active_mask]  # [K, num_classes]
+
+            raw_preds = active_logits.argmax(dim=-1)  # [K]
+
             if active_logits.shape[-1] == 50:
                 pred_fam = self.orig2fam[raw_preds]
             else:
@@ -772,9 +776,9 @@ class SuperRelationConfusionMatrix(pl.Callback):
                 pred_fam = raw_preds
 
             # Ground Truth Mapping
-            active_tgts = tgt_rel_matrix[active_mask]       
-            gt_rel_idx = active_tgts.argmax(dim=-1)         
-            gt_fam = self.orig2fam[gt_rel_idx]              
+            active_tgts = tgt_rel_matrix[active_mask]
+            gt_rel_idx = active_tgts.argmax(dim=-1)
+            gt_fam = self.orig2fam[gt_rel_idx]
 
             self.preds.append(pred_fam.cpu())
             self.targets.append(gt_fam.cpu())
@@ -814,99 +818,121 @@ class SuperRelationConfusionMatrix(pl.Callback):
             for logger in loggers:
                 if isinstance(logger, pl.loggers.WandbLogger):
                     import wandb
+
                     logger.experiment.log({"val/confusion_matrix": wandb.Image(fig)})
         plt.close(fig)
-class TeacherStudentAgreementCallback(pl.Callback):
+        import torch
+
+class ExpertDiagnosticsCallback(pl.Callback):
     """
-    Validates Feature Learning by comparing Student predictions against 
-    Projected Teacher predictions on matched Ground Truth pairs.
+    Diagnoses Expert health by decoupling them from the Router.
+    Metrics:
+    - Oracle Acc: Accuracy of the Expert on its own family (ignoring Router).
+    - Logit Scale: Average magnitude of the Expert's raw logits (detects 'shouting').
+    - Router Agmt: How often the Router agrees with the Ground Truth family.
     """
-    def __init__(self, device='cuda'):
+
+    def __init__(self, device="cuda"):
         super().__init__()
-       
-        self.mapping = torch.tensor(get_super_rel_map(), device=device)
+        self.global2local_cpu, _, _, _ = get_orig2idx()
+        self.super_map_cpu = get_super_rel_map()
 
-        from model.deformable_detr import DeformableDetrHungarianMatcher
+        self.global2local = torch.tensor(self.global2local_cpu, device=device)
+        self.super_map = torch.tensor(self.super_map_cpu, device=device)
 
-        self.matcher = DeformableDetrHungarianMatcher(
-            class_cost=1.0, bbox_cost=5.0, giou_cost=2.0
-        )
-        
-        self.agreements = []
-        self.kl_divs = []
+        self.reset_stats()
+
+    def reset_stats(self):
+        # 0: Geo, 1: Poss, 2: Sem
+        self.stats = {
+            0: {"correct": 0, "total": 0, "logits": []},
+            1: {"correct": 0, "total": 0, "logits": []},
+            2: {"correct": 0, "total": 0, "logits": []},
+        }
+        self.router_correct = 0
+        self.total_samples = 0
 
     def on_validation_epoch_start(self, trainer, pl_module):
-        self.agreements = []
-        self.kl_divs = []
-       
-        if self.mapping.device != pl_module.device:
-            self.mapping = self.mapping.to(pl_module.device)
+        self.reset_stats()
+        # Ensure tensors are on the correct device
+        if self.global2local.device != pl_module.device:
+            self.global2local = self.global2local.to(pl_module.device)
+            self.super_map = self.super_map.to(pl_module.device)
 
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
-        """
-        Intercepts validation batch to compare Teacher vs Student.
-        """
-        model_out = outputs["outputs"] # From SGG.validation_step
+    def on_validation_batch_end(
+        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
+    ):
+        model_out = outputs["outputs"]
         targets = outputs["targets"]
-        
-        pred_rel = model_out.get("pred_rel")
-        if not isinstance(pred_rel, tuple):
-            return 
+        pred_rel = model_out["pred_rel"]
 
- 
-        teacher_logits_batch, student_logits_batch = pred_rel
-
-  
-        outputs_for_matcher = {
-            "logits": model_out["logits"], 
-            "pred_boxes": model_out["pred_boxes"]
-        }
-        
-        indices, _ = self.matcher(outputs_for_matcher, targets)
-
-        for i, (src_idx, tgt_idx) in enumerate(indices):
-            
-            tgt_matrix = targets[i]['rel'][tgt_idx][:, tgt_idx] # [M, M, 50]
-            
-        
-            active_mask = tgt_matrix.sum(dim=-1) > 0 # [M, M] boolean mask
-            
-            if not active_mask.any():
-                continue
-
-            t_logits = teacher_logits_batch[i][src_idx][:, src_idx][active_mask]
-            s_logits = student_logits_batch[i][src_idx][:, src_idx][active_mask]
-
-            t_probs_fine = F.softmax(t_logits, dim=-1) # [K, 50]
-            t_probs_super = torch.zeros_like(s_logits) # [K, 3]
-
-            for fam_id in range(3):
-                fam_mask = (self.mapping == fam_id)
-                t_probs_super[:, fam_id] = t_probs_fine[:, fam_mask].sum(dim=1)
-
-            # Normalize (just in case) and add epsilon for KL
-            t_probs_super = t_probs_super / (t_probs_super.sum(dim=-1, keepdim=True) + 1e-9)
-            
-            
-            teacher_choice = t_probs_super.argmax(dim=-1)
-            student_choice = s_logits.argmax(dim=-1)
-            batch_agreement = (teacher_choice == student_choice).float().mean()
-            self.agreements.append(batch_agreement)
-
-            # B. KL Divergence (Soft Probability Distance)
-            # KL(Teacher || Student)
-            s_log_probs = F.log_softmax(s_logits, dim=-1)
-            batch_kl = F.kl_div(s_log_probs, t_probs_super, reduction='batchmean')
-            self.kl_divs.append(batch_kl)
-
-    def on_validation_epoch_end(self, trainer, pl_module):
-        if not self.agreements:
+        if not isinstance(pred_rel, dict):
             return
 
-        avg_agree = torch.stack(self.agreements).mean()
-        avg_kl = torch.stack(self.kl_divs).mean()
+        experts = {0: pred_rel["geo"], 1: pred_rel["poss"], 2: pred_rel["sem"]}
+        router_logits = pred_rel["super"]  # (B, N, N, 3)
 
-        pl_module.log("distill/teacher_student_agreement", avg_agree, sync_dist=True)
-        pl_module.log("distill/kl_divergence", avg_kl, sync_dist=True)
-        
-        print(f"\n[Distillation Report] Agreement: {avg_agree:.2%} | KL: {avg_kl:.4f}")
+        for i, target in enumerate(targets):
+            tgt_rel = target["rel"]  # (N, N, 50)
+            active_idx = tgt_rel.nonzero(as_tuple=False)  # (K, 3) -> (sub, obj, cls)
+            if active_idx.shape[0] == 0:
+                continue
+
+            sub, obj, gt_cls = active_idx[:, 0], active_idx[:, 1], active_idx[:, 2]
+
+            gt_fam = self.super_map[gt_cls]  # (K,) e.g., [0, 2, 2, 1...]
+            gt_local = self.global2local[gt_cls]  # (K,) e.g., [3, 0, 5, 2...]
+
+            r_logits = router_logits[i, sub, obj]  # (K, 3)
+            r_preds = r_logits.argmax(dim=-1)
+            self.router_correct += (r_preds == gt_fam).sum().item()
+            self.total_samples += len(gt_fam)
+
+            for fam_id in [0, 1, 2]:
+                mask = gt_fam == fam_id
+                if not mask.any():
+                    continue
+
+                curr_expert_logits = experts[fam_id][
+                    i, sub[mask], obj[mask]
+                ]  # (M, n_local)
+                curr_gt_local = gt_local[mask]  # (M,)
+
+                preds = curr_expert_logits.argmax(dim=-1)
+                num_correct = (preds == curr_gt_local).sum().item()
+                avg_logit = curr_expert_logits.max(dim=-1)[0].mean().item()
+
+                self.stats[fam_id]["correct"] += num_correct
+                self.stats[fam_id]["total"] += len(curr_gt_local)
+                self.stats[fam_id]["logits"].append(avg_logit)
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        print("\n" + "=" * 40)
+        print(f" EXPERT DIAGNOSTICS (Epoch {trainer.current_epoch})")
+        print("=" * 40)
+
+        # Router Stats
+        r_acc = self.router_correct / max(self.total_samples, 1)
+        print(f" [Router] Gate Accuracy: {r_acc:.2%}")
+
+        families = ["Geometric", "Possessive", "Semantic"]
+        for fam_id, name in enumerate(families):
+            data = self.stats[fam_id]
+            if data["total"] > 0:
+                oracle_acc = data["correct"] / data["total"]
+                logit_scale = np.mean(data["logits"])
+                print(f" [{name} Expert]")
+                print(f"   - Oracle Acc:   {oracle_acc:.2%} (Capability Ceiling)")
+                print(f"   - Avg Logit:    {logit_scale:.2f}  (Loudness)")
+            else:
+                print(f" [{name} Expert] No samples.")
+        print("=" * 40 + "\n")
+
+        if trainer.logger and hasattr(trainer.logger.experiment, "log"):
+            trainer.logger.experiment.log(
+                {
+                    f"oracle_acc/{families[i]}": self.stats[i]["correct"]
+                    / max(1, self.stats[i]["total"])
+                    for i in range(3)
+                }
+            )
