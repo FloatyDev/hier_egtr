@@ -114,7 +114,7 @@ def evaluate(
 
     if single_sgg_evaluator_list is not None:
 
-        recall = single_sgg_evaluator_list["sgdet"].print_stats()
+        recall = single_sgg_evaluator["sgdet"].print_stats()
 
         mean_recall = calculate_mR_from_evaluator_list(
             single_sgg_evaluator_list, "sgdet", multiple_preds=False

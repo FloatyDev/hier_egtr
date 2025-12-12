@@ -131,9 +131,7 @@ def evaluate_batch(
         pred_obj_logits = outputs["logits"][j]
         pred_boxes = outputs["pred_boxes"][j]
 
-        pred_rel_frame_logits = pred_rel_logits[j]
-
-        pred_rel_probs = torch.nn.functional.softmax(pred_rel_frame_logits, dim=-1)
+        pred_rel_probs = pred_rel_logits[j]
 
         orig_size = target["orig_size"].cpu()
 
@@ -372,7 +370,7 @@ class SGG(pl.LightningModule):
                 p.requires_grad = False
 
             trainable_modules = [
-                "rel_predictor.super_head",
+                #"rel_predictor.super_head",
                 "rel_predictor.expert_geo",
                 "rel_predictor.expert_poss",
                 "rel_predictor.expert_sem",
