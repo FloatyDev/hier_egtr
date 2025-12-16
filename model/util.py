@@ -806,9 +806,6 @@ class GTTripletVis(pl.Callback):
         self.max_triplets = max_triplets
         self.dpi = dpi
 
-    # --------------------------------------------------------------------- #
-    #                   Lightning hook: called every batch                  #
-    # --------------------------------------------------------------------- #
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx: int):
         global_step = trainer.global_step
         if global_step % self.freq != 0:  # skip most batches
@@ -833,8 +830,6 @@ class GTTripletVis(pl.Callback):
         image = Image.open(img_file).convert("RGB")
         W, H = image.size
 
-        # ------------------------------------------------------------------ #
-        # 2. Convert GT tensors ➜ numpy
         boxes_xyxy = rescale_bboxes(tgt["boxes"].cpu(), (W, H)).numpy()
         obj_cls = tgt["class_labels"].cpu().numpy()  # (N,)
         rel = tgt["rel"].cpu()  # (N,N,R)
@@ -843,8 +838,6 @@ class GTTripletVis(pl.Callback):
         if self.max_triplets is not None:
             trip_idx = trip_idx[: self.max_triplets]
 
-        # ------------------------------------------------------------------ #
-        # 3. Draw
         fig, ax = plt.subplots(figsize=(W / self.dpi, H / self.dpi), dpi=self.dpi)
         ax.imshow(image)
         cmap = plt.cm.get_cmap("hsv", len(trip_idx) + 1)
@@ -852,7 +845,7 @@ class GTTripletVis(pl.Callback):
         for t, (sub_i, obj_i, rel_id) in enumerate(trip_idx, start=1):
             colour = cmap(t)
 
-            # subject
+
             x1, y1, x2, y2 = boxes_xyxy[sub_i]
             ax.add_patch(
                 patches.Rectangle(
@@ -872,8 +865,6 @@ class GTTripletVis(pl.Callback):
                 color=colour,
                 weight="bold",
             )
-
-            # object
             xo1, yo1, xo2, yo2 = boxes_xyxy[obj_i]
             ax.add_patch(
                 patches.Rectangle(
@@ -894,7 +885,7 @@ class GTTripletVis(pl.Callback):
                 weight="bold",
             )
 
-            # predicate label at mid-point
+
             xm, ym = (x1 + x2 + xo1 + xo2) / 4, (y1 + y2 + yo1 + yo2) / 4
             ax.text(
                 xm,
@@ -909,8 +900,6 @@ class GTTripletVis(pl.Callback):
         fig.tight_layout()
         plt.draw()
 
-        # ------------------------------------------------------------------ #
-        # 4. Log the figure
         def _log_figure(fig, tag: str, step: int, trainer):
             """
             Send `fig` to every logger registered in the current Trainer.
@@ -928,16 +917,13 @@ class GTTripletVis(pl.Callback):
             )
 
             for lg in loggers:
-                # --- TensorBoard ---------------------------------------------------
+
                 if hasattr(lg, "experiment") and hasattr(lg.experiment, "add_figure"):
                     lg.experiment.add_figure(tag, fig, global_step=step)
 
-                # --- WandB ---------------------------------------------------------
+
                 if isinstance(lg, pl.loggers.WandbLogger):
                     lg.experiment.log({tag: wandb.Image(fig)}, step=step)
-
-        # ------------------------------------------------------------------ #
-        # … inside on_train_batch_end after creating `fig`
         _log_figure(fig, tag="GT_triplets/train", step=global_step, trainer=trainer)
         plt.close(fig)
 
@@ -945,7 +931,7 @@ class SuperRelationConfusionMatrix(pl.Callback):
     def __init__(self, id2label, device="cpu"):
         super().__init__()
         self.super_cats = ["Geometric", "Possessive", "Semantic"]
-        # Ensure mapping is available
+
         self.orig2fam = torch.tensor(get_super_rel_map(), device=device)
 
         self.preds = []
@@ -959,55 +945,57 @@ class SuperRelationConfusionMatrix(pl.Callback):
     def on_validation_epoch_start(self, trainer, pl_module):
         self.preds = []
         self.targets = []
-        self.orig2fam = self.orig2fam.to(pl_module.device)
+
+        if self.orig2fam.device != pl_module.device:
+            self.orig2fam = self.orig2fam.to(pl_module.device)
 
     def on_validation_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
     ):
-        model_out = outputs["outputs"]
+        model_out = outputs["outputs"] 
         targets = outputs["targets"]
 
         pred_rel = model_out["pred_rel"]
-
+  
         if isinstance(pred_rel, dict):
-            pred_logits = pred_rel["super"]
+            pred_logits_50 = pl_module.model.rel_predictor.combine_logits(pred_rel)
         else:
-            pred_logits = pred_rel
+            pred_logits_50 = pred_rel
+
 
         outputs_for_matcher = {
             "logits": model_out["logits"],
-            "pred_boxes": model_out["pred_boxes"],
+            "pred_boxes": model_out["pred_boxes"]
         }
-
         indices, _ = self.matcher(outputs_for_matcher, targets)
 
         for i, (src_idx, tgt_idx) in enumerate(indices):
-            rel_logits_matched = pred_logits[i][src_idx][:, src_idx]
+
+            rel_logits_matched = pred_logits_50[i][src_idx][:, src_idx]
+            
             tgt_rel_matrix = targets[i]["rel"][tgt_idx][:, tgt_idx]
 
-            active_mask = tgt_rel_matrix.sum(dim=-1) > 0
+            active_mask = tgt_rel_matrix.sum(dim=-1) > 0 
             if not active_mask.any():
                 continue
 
-            active_logits = rel_logits_matched[active_mask]  # [K, num_classes]
+            active_logits = rel_logits_matched[active_mask] # [N_Pairs, 50]
+            active_tgts = tgt_rel_matrix[active_mask]       # [N_Pairs, 50]
 
-            raw_preds = active_logits.argmax(dim=-1)  # [K]
+            raw_preds = active_logits.argmax(dim=-1) # [N_Pairs] (Indices 0-49)
+            
+            pred_fam = self.orig2fam[raw_preds]
 
-            if active_logits.shape[-1] == 50:
-                pred_fam = self.orig2fam[raw_preds]
-            else:
-                # If we have 3 classes (Raw Router), use directly
-                pred_fam = raw_preds
-
-            # Ground Truth Mapping
-            active_tgts = tgt_rel_matrix[active_mask]
-            gt_rel_idx = active_tgts.argmax(dim=-1)
-            gt_fam = self.orig2fam[gt_rel_idx]
+            gt_rel_idx = active_tgts.argmax(dim=-1)         
+            gt_fam = self.orig2fam[gt_rel_idx]              
 
             self.preds.append(pred_fam.cpu())
             self.targets.append(gt_fam.cpu())
-
+            
     def on_validation_epoch_end(self, trainer, pl_module):
+        """
+        Aggregates results, plots Confusion Matrix, and logs to WandB.
+        """
         if not self.preds:
             return
         import torch
@@ -1016,38 +1004,43 @@ class SuperRelationConfusionMatrix(pl.Callback):
         all_targets = torch.cat(self.targets).numpy()
 
         cm = confusion_matrix(
-            all_targets,
-            all_preds,
-            labels=[0, 1, 2],
-            normalize="true",
+            all_targets, 
+            all_preds, 
+            labels=[0, 1, 2], 
+            normalize='true'
         )
 
-        fig, ax = plt.subplots(figsize=(8, 6), dpi=120)
+        # Plotting
+        fig, ax = plt.subplots(figsize=(8, 7), dpi=120)
         sns.heatmap(
             cm,
             annot=True,
-            fmt=".2f",
+            fmt=".2%",  # Format as percentage
             cmap="Blues",
             xticklabels=self.super_cats,
             yticklabels=self.super_cats,
+            cbar=False,
             ax=ax,
         )
-        ax.set_ylabel("True Label")
-        ax.set_xlabel("Predicted Label (Fused System)")
-        ax.set_title(f"Super-Relation Confusion Matrix (Epoch {trainer.current_epoch})")
+        
+        ax.set_ylabel("True Super-Category (GT)")
+        ax.set_xlabel("Predicted Super-Category (Fused Model)")
+        ax.set_title(f"Fused Expert Confusion Matrix (Epoch {trainer.current_epoch})")
+        
+        plt.tight_layout()
 
-        if trainer.logger:
-            loggers = (
-                trainer.loggers if hasattr(trainer, "loggers") else [trainer.logger]
-            )
-            for logger in loggers:
-                if isinstance(logger, pl.loggers.WandbLogger):
-                    import wandb
 
-                    logger.experiment.log({"val/confusion_matrix": wandb.Image(fig)})
+        loggers = trainer.loggers if hasattr(trainer, "loggers") else [trainer.logger]
+        
+        for logger in loggers:
+            if isinstance(logger, pl.loggers.WandbLogger):
+                # Log the image to WandB under a specific key
+                logger.experiment.log(
+                    {"val/fused_confusion_matrix": wandb.Image(fig)},
+                    step=trainer.global_step
+                )
+            
         plt.close(fig)
-        import torch
-
 class ExpertDiagnosticsCallback(pl.Callback):
     """
     Diagnoses Expert health by decoupling them from the Router.
@@ -1132,32 +1125,63 @@ class ExpertDiagnosticsCallback(pl.Callback):
                 self.stats[fam_id]["logits"].append(avg_logit)
 
     def on_validation_epoch_end(self, trainer, pl_module):
-        print("\n" + "=" * 40)
-        print(f" EXPERT DIAGNOSTICS (Epoch {trainer.current_epoch})")
-        print("=" * 40)
+    
+        def get_logit_sum(fam_id):
+            logits = self.stats[fam_id]["logits"]
+            return sum(logits) if logits else 0.0
 
-        # Router Stats
-        r_acc = self.router_correct / max(self.total_samples, 1)
-        print(f" [Router] Gate Accuracy: {r_acc:.2%}")
+        local_stats = torch.tensor([
+            self.router_correct, 
+            self.total_samples,
+            
+            self.stats[0]["correct"], self.stats[0]["total"], get_logit_sum(0),
+            self.stats[1]["correct"], self.stats[1]["total"], get_logit_sum(1),
+            self.stats[2]["correct"], self.stats[2]["total"], get_logit_sum(2),
+        ], device=pl_module.device, dtype=torch.float32)
 
-        families = ["Geometric", "Possessive", "Semantic"]
-        for fam_id, name in enumerate(families):
-            data = self.stats[fam_id]
-            if data["total"] > 0:
-                oracle_acc = data["correct"] / data["total"]
-                logit_scale = np.mean(data["logits"])
-                print(f" [{name} Expert]")
-                print(f"   - Oracle Acc:   {oracle_acc:.2%} (Capability Ceiling)")
-                print(f"   - Avg Logit:    {logit_scale:.2f}  (Loudness)")
-            else:
-                print(f" [{name} Expert] No samples.")
-        print("=" * 40 + "\n")
+        if trainer.world_size > 1:
+            torch.distributed.all_reduce(local_stats, op=torch.distributed.ReduceOp.SUM)
 
-        if trainer.logger and hasattr(trainer.logger.experiment, "log"):
-            trainer.logger.experiment.log(
-                {
-                    f"oracle_acc/{families[i]}": self.stats[i]["correct"]
-                    / max(1, self.stats[i]["total"])
-                    for i in range(3)
-                }
-            )
+        # process & print ONLY on Rank 0
+        if trainer.is_global_zero:
+            # Unpack stats
+            r_corr, r_tot = local_stats[0].item(), local_stats[1].item()
+            
+            print("\n" + "=" * 40)
+            print(f" EXPERT DIAGNOSTICS (Epoch {trainer.current_epoch})")
+            print("=" * 40)
+
+            # Router
+            r_acc = r_corr / max(r_tot, 1)
+            print(f" [Router] Gate Accuracy: {r_acc:.2%}")
+
+            families = ["Geometric", "Possessive", "Semantic"]
+            base_idx = 2  # Where expert stats start in the tensor
+            
+            log_dict = {}
+
+            for i, name in enumerate(families):
+                curr = base_idx + (i * 3)
+                
+                e_corr = local_stats[curr].item()
+                e_tot = local_stats[curr+1].item()
+                e_logit_sum = local_stats[curr+2].item()
+
+                if e_tot > 0:
+                    oracle_acc = e_corr / e_tot
+                    avg_logit = e_logit_sum / e_tot
+                    print(f" [{name} Expert]")
+                    print(f"   - Oracle Acc:   {oracle_acc:.2%} (Capability Ceiling)")
+                    print(f"   - Avg Logit:    {avg_logit:.2f}  (Loudness)")
+                    
+                    log_dict[f"oracle_acc/{name}"] = oracle_acc
+                    log_dict[f"avg_logit/{name}"] = avg_logit
+                else:
+                    print(f" [{name} Expert] No samples.")
+                    log_dict[f"oracle_acc/{name}"] = 0.0
+                    log_dict[f"avg_logit/{name}"] = 0.0
+
+            print("=" * 40 + "\n")
+
+            if trainer.logger and hasattr(trainer.logger.experiment, "log"):
+                trainer.logger.experiment.log(log_dict)
