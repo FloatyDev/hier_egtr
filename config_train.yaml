@@ -64,3 +64,4 @@ num_semantic: 24
 super_weight: 1
 train_head: true
 artifact_path: "artifacts/"
+flat_path: "artifacts/"
