@@ -179,12 +179,14 @@ class ExpertRelationClassifier(nn.Module):
         weighted_poss = raw_poss + logits_super[..., 1:2]
         weighted_sem = raw_sem + logits_super[..., 2:3]
 
+        normalized_embeds = torch.nn.functional.normalize(x, p=2, dim=-1)
+
         return {
             "super": logits_super,
             "geo": weighted_geo,
             "poss": weighted_poss,
             "sem": weighted_sem,
-            "embeddings": x,
+            "embeddings": normalized_embeds,
         }
 
     def combine_logits(self, output_dict):
