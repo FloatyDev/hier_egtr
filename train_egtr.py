@@ -48,7 +48,9 @@ from model.util import (
     get_super_rel_map,
     get_orig2idx,
     SuperRelationConfusionMatrix,
-    ExpertDiagnosticsCallback
+    ExpertDiagnosticsCallback,
+    surgery_initialize_experts,
+    run_surgery_sanity_check
 )
 import wandb
 
@@ -56,13 +58,14 @@ seed_everything(42, workers=True)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 torch.set_float32_matmul_precision("medium")
 
+
 def stitch_logits(output_dict, orig2fam_map, device):
     """
     Reconstructs the full (B, N, N, 50) logit tensor from the hierarchical dict.
     """
     logits_super = output_dict["super"]
     B, N, N_q, _ = logits_super.shape
-    num_fine_classes = 50 
+    num_fine_classes = 50
     final_logits = torch.full((B, N, N_q, num_fine_classes), -1000.0, device=device)
 
     geo_indices = [i for i, x in enumerate(orig2fam_map) if x == 0]
@@ -255,6 +258,7 @@ class SGG(pl.LightningModule):
         super_weight,
         train_relation_head=False,
         artifact_path="",
+        flat_path="",
         use_class_context=False,
         partition_data=None,
     ):
@@ -293,6 +297,7 @@ class SGG(pl.LightningModule):
         config.num_negatives = num_negatives
         config.super_weight = super_weight
         config.use_class_context = use_class_context
+        config.flat_path = flat_path
 
         self.config = config
         self.partition_data = partition_data
@@ -319,19 +324,19 @@ class SGG(pl.LightningModule):
                 _key for _key, _, _ in load_info["mismatched_keys"]
             ]
 
-        # only train relation_head
         if train_relation_head:
             if not main_trained:
+                # This restores the 'shared_layers' and 'super_head' learned during distillation
                 assert (
                     artifact_path
                 ), "Must provide artifact_path to the Super-Classifier checkpoint"
-                print(f"Loading Super-Classifier weights from: {artifact_path}")
+                print(f"[sgg] Loading Router weights from: {artifact_path}")
 
                 ckpt_path = sorted(
-                    glob(f"{args.artifact_path}/checkpoints/epoch=*.ckpt"),
+                    glob(f"{artifact_path}/checkpoints/epoch=*.ckpt"),
                     key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
                 )[-1]
-                print(f"Found checkpoint: {ckpt_path}")
+                print(f"Found Router checkpoint: {ckpt_path}")
 
                 state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
 
@@ -343,11 +348,12 @@ class SGG(pl.LightningModule):
                         new_state_dict[k] = v
                 state_dict = new_state_dict
 
+                # strict=False is expected because 'expert_geo', 'expert_poss', etc. are missing
                 missing, unexpected = self.model.load_state_dict(
                     state_dict, strict=False
                 )
 
-                print("\n[sgg] Weight Loading Report:")
+                print("\n[sgg] Router Loading Report:")
                 print(
                     f"   - Missing Keys (Should be Experts): {[k for k in missing if 'expert' in k]}"
                 )
@@ -364,11 +370,34 @@ class SGG(pl.LightningModule):
                         "CRITICAL WARNING: 'shared_layers' missing! Feature extractor is random."
                     )
 
+                if flat_path:
+                    print(
+                        f"\n[sgg] Performing Weight Surgery from Flat-50: {flat_path}"
+                    )
+
+                    flat_ckpt = sorted(
+                        glob(f"{flat_path}/checkpoints/epoch=*.ckpt"),
+                        key=lambda x: int(x.split("epoch=")[1].split("-")[0]),
+                    )[-1]
+                    print(f"Found Flat checkpoint: {flat_ckpt}")
+
+                    # Perform Surgery: Slice weights -> Inject into Experts
+                    surgery_initialize_experts(self.model, flat_ckpt, device="cpu")
+
+                    # Verify: Ensure weights match exactly
+                    run_surgery_sanity_check(self.model, flat_ckpt, device="cpu")
+                else:
+                    print(
+                        "\n[sgg] WARNING: No 'flat_path' provided. Experts will be RANDOM INITIALIZED."
+                    )
+
             print("\n[sgg] Configuring Gradients...")
 
+            # Freeze everything initially
             for p in self.model.parameters():
                 p.requires_grad = False
 
+            # Define which heads are trainable
             trainable_modules = [
                 "rel_predictor.super_head",
                 "rel_predictor.expert_geo",
@@ -376,18 +405,19 @@ class SGG(pl.LightningModule):
                 "rel_predictor.expert_sem",
             ]
 
+            # Unfreeze specific modules
             for n, p in self.model.named_parameters():
                 if any(t in n for t in trainable_modules):
                     p.requires_grad = True
 
             trainable = [n for n, p in self.model.named_parameters() if p.requires_grad]
 
+            # Validation assertions
             assert any(
                 "expert_geo" in t for t in trainable
             ), "Experts are not trainable!"
-            #assert any(
-            #    "super_head" in t for t in trainable
-            #), "Super Head is frozen (Check config)!"
+            assert any("super_head" in t for t in trainable), "Super Head is frozen!"
+            # We explicitly want shared_layers FROZEN to prevent 'shock' from the new experts destroying the router features
             assert not any(
                 "shared_layers" in t for t in trainable
             ), "Shared Layers leaked into training!"
@@ -820,6 +850,7 @@ def build_parser(parser):
         help="Seed for random partition generation. "
         "If None, uses the default manual partition.",
     )
+    parser.add_argument("--flat_path", type=str, default="artifacts/")
 
     return parser
 
@@ -1073,6 +1104,7 @@ if __name__ == "__main__":
         super_weight=args.super_weight,
         train_relation_head=args.train_head,
         artifact_path=args.artifact_path,
+        flat_path=args.flat_path,
         use_class_context=args.use_class_context,
         partition_data=partition_data,
     )

@@ -71,6 +71,126 @@ def sigmoid_focal_loss(
     return loss.mean(1).sum() / num_boxes
 
 
+def surgery_initialize_experts(model, flat_checkpoint_path, device):
+    print("Performing Weight Surgery...")
+    flat_state = torch.load(flat_checkpoint_path, map_location=device)["state_dict"]
+
+    flat_w = flat_state["model.rel_predictor.layers.2.weight"]  # [50, Hidden]
+    flat_b = flat_state["model.rel_predictor.layers.2.bias"]  # [50]
+
+    orig2fam = get_super_rel_map()
+
+    for fam_id, module_name in enumerate(["expert_geo", "expert_poss", "expert_sem"]):
+        # Find indices belonging to this family
+        indices = [i for i, f in enumerate(orig2fam) if f == fam_id]
+        indices = torch.tensor(indices, device=device)
+
+        expert_w = flat_w[indices]  # [Num_Local, Hidden]
+        expert_b = flat_b[indices]  # [Num_Local]
+
+        getattr(model.rel_predictor, module_name).weight.data.copy_(expert_w)
+        getattr(model.rel_predictor, module_name).bias.data.copy_(expert_b)
+
+    print("Surgery Complete: Experts initialized from Flat-50 parents.")
+
+
+def run_surgery_sanity_check(hierarchical_model, flat_ckpt_path, device="cuda"):
+    print("\n--- Running Weight Surgery Sanity Check ---")
+
+    flat_state = torch.load(flat_ckpt_path, map_location=device)["state_dict"]
+
+    # Adjust these keys to match your specific checkpoint naming convention
+    # Common variants: "model.rel_predictor.layers.2.weight" or "rel_predictor.fine_head.weight"
+    flat_w_key = "model.rel_predictor.layers.2.weight"
+    flat_b_key = "model.rel_predictor.layers.2.bias"
+
+    if flat_w_key not in flat_state:
+        print(
+            f"ERROR: Could not find key '{flat_w_key}' in checkpoint. Available keys:"
+        )
+        print([k for k in flat_state.keys() if "rel_predictor" in k])
+        return
+
+    flat_w = flat_state[flat_w_key]  # Shape: [50, Hidden]
+    flat_b = flat_state[flat_b_key]  # Shape: [50]
+
+    print(f"Source (Flat) Weights: {flat_w.shape}")
+
+    # orig2fam: Array where index=Global_ID, value=Family_ID (0,1,2)
+    # global2local: We need to figure out which row in 'expert_geo' corresponds to Global ID 0
+    orig2fam = get_super_rel_map()
+    global2local_map, n_geo, n_poss, n_sem = get_orig2idx()
+
+    # Shape: [1, Hidden_Dim] (e.g., [1, 256])
+    dummy_input = torch.randn(1, flat_w.shape[1]).to(device)
+
+    families = {
+        0: ("expert_geo", n_geo),
+        1: ("expert_poss", n_poss),
+        2: ("expert_sem", n_sem),
+    }
+
+    all_passed = True
+
+    for fam_id, (module_name, expected_dim) in families.items():
+        print(f"\nChecking Family {fam_id} ({module_name})...")
+
+        # Get the Expert module from your new model
+        expert_module = getattr(hierarchical_model.rel_predictor, module_name)
+
+        # --- TEST A: Shape Check ---
+        if expert_module.weight.shape[0] != expected_dim:
+            print(
+                f"FAILED: Shape Mismatch. Expected {expected_dim}, got {expert_module.weight.shape[0]}"
+            )
+            all_passed = False
+            continue
+
+        # --- TEST B: Static Weight Comparison ---
+        # Find all global indices belonging to this family
+        global_indices = [i for i, f in enumerate(orig2fam) if f == fam_id]
+
+        # We need to sort them because 'get_orig2idx' assigns local IDs sequentially
+        # based on the order they appear in get_super_rel_map
+        # (Assuming your slicing logic followed this order)
+        # Usually, local_idx 0 corresponds to the first global_idx found in the list.
+
+        source_w_slice = flat_w[global_indices]
+        source_b_slice = flat_b[global_indices]
+
+        target_w = expert_module.weight.data
+        target_b = expert_module.bias.data
+
+        diff_w = (source_w_slice - target_w).abs().max().item()
+        diff_b = (source_b_slice - target_b).abs().max().item()
+
+        if diff_w < 1e-6 and diff_b < 1e-6:
+            print(f"  [Pass] Static Weights match (Diff: {diff_w:.1e})")
+        else:
+            print(f"  [FAIL] Static Weights mismatch! (Max Diff: {diff_w:.4f})")
+            all_passed = False
+
+        # Run input through Flat weights manually
+        flat_logits = torch.matmul(dummy_input, source_w_slice.T) + source_b_slice
+
+        # Run input through Expert module
+        # Note: We act on the linear layer directly to bypass the Router addition logic for this test
+        expert_logits = expert_module(dummy_input)
+
+        func_diff = (flat_logits - expert_logits).abs().max().item()
+
+        if func_diff < 1e-5:
+            print(f"  [Pass] Functional Output matches (Diff: {func_diff:.1e})")
+        else:
+            print(f"  [FAIL] Functional Output mismatch! (Diff: {func_diff:.4f})")
+            all_passed = False
+
+    if all_passed:
+        print("\nSUCCESS: Surgery Verified. Experts are clones of the Flat model.")
+    else:
+        print("\nWARNING: Surgery Failed. Check your slicing logic.")
+
+
 class SupConLossHierar(nn.Module):
     def __init__(self, temperature=0.07, contrast_mode="all", base_temperature=0.07):
         super(SupConLossHierar, self).__init__()
