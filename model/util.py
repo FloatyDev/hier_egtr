@@ -71,6 +71,110 @@ def sigmoid_focal_loss(
     return loss.mean(1).sum() / num_boxes
 
 
+class SupConLossHierar(nn.Module):
+    def __init__(self, temperature=0.07, contrast_mode="all", base_temperature=0.07):
+        super(SupConLossHierar, self).__init__()
+        self.temperature = temperature
+        self.contrast_mode = contrast_mode
+        self.base_temperature = base_temperature
+
+        mapping_list = get_super_rel_map()
+        self.register_buffer("orig2fam", torch.tensor(mapping_list, dtype=torch.long))
+
+    def get_parent_label(self, labels):
+        """
+        Maps fine-grained labels (0-49) to parent families (0-2)
+        using the correct Visual Genome mapping.
+        """
+        valid_mask = (labels >= 0) & (labels < len(self.orig2fam))
+
+        parent_labels = torch.zeros_like(labels)
+        parent_labels[valid_mask] = self.orig2fam[labels[valid_mask]]
+
+        return parent_labels
+
+    def forward(self, features, labels=None, mask=None):
+        """
+        Args:
+            features: [N_rels, Dim] or [N_rels, n_views, Dim]
+            labels:   [N_rels]
+        """
+        device = features.device
+
+        if len(features.shape) == 2:
+            features = features.unsqueeze(1)
+
+        if len(features.shape) < 3:
+            raise ValueError("`features` needs to be [bsz, n_views, ...]")
+        if len(features.shape) > 3:
+            features = features.view(features.shape[0], features.shape[1], -1)
+
+        batch_size = features.shape[0]
+
+        if labels is not None and mask is not None:
+            raise ValueError("Cannot define both `labels` and `mask`")
+        elif labels is None and mask is None:
+            mask = torch.eye(batch_size, dtype=torch.float32).to(device)
+        elif labels is not None:
+            labels = labels.contiguous().view(-1, 1)
+            if labels.shape[0] != batch_size:
+                raise ValueError("Num of labels does not match num of features")
+
+            parent_labels = self.get_parent_label(labels.squeeze(1)).view(-1, 1)
+
+            mask_same_parent = (
+                torch.eq(parent_labels, parent_labels.T).float().to(device)
+            )
+
+            mask = torch.eq(labels, labels.T).float().to(device)
+        else:
+            mask = mask.float().to(device)
+
+        contrast_count = features.shape[1]
+        contrast_feature = torch.cat(torch.unbind(features, dim=1), dim=0)
+
+        if self.contrast_mode == "one":
+            anchor_feature = features[:, 0]
+            anchor_count = 1
+        elif self.contrast_mode == "all":
+            anchor_feature = contrast_feature
+            anchor_count = contrast_count
+        else:
+            raise ValueError("Unknown mode: {}".format(self.contrast_mode))
+
+        anchor_dot_contrast = torch.div(
+            torch.matmul(anchor_feature, contrast_feature.T), self.temperature
+        )
+
+        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+        logits = anchor_dot_contrast - logits_max.detach()
+
+        mask = mask.repeat(anchor_count, contrast_count)
+        if labels is not None:
+            mask_same_parent = mask_same_parent.repeat(anchor_count, contrast_count)
+
+        logits_mask = torch.scatter(
+            torch.ones_like(mask),
+            1,
+            torch.arange(batch_size * anchor_count).view(-1, 1).to(device),
+            0,
+        )
+        mask = mask * logits_mask
+
+        if labels is not None:
+            logits_mask = logits_mask * mask_same_parent
+
+        exp_logits = torch.exp(logits) * logits_mask
+
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-7)
+
+        mean_log_prob_pos = (mask * log_prob).sum(1) / (mask.sum(1) + 1e-7)
+
+        loss = -(self.temperature / self.base_temperature) * mean_log_prob_pos
+        loss = loss.view(anchor_count, batch_size).mean()
+
+        return loss
+
 
 class FocalLoss(nn.Module):
     def __init__(

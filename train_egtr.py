@@ -1094,11 +1094,8 @@ if __name__ == "__main__":
         rel_categories=rel_categories,
         freq=1,
     )
-<<<<<<< HEAD
-=======
     cm_callback = SuperRelationConfusionMatrix(id2label=id2label)
     expert_callback = ExpertDiagnosticsCallback()
->>>>>>> f2324de (feat: add debugging callbacks)
 
     class SaveConfigCallback(Callback):
         def __init__(self, config_path, log_dir):
@@ -1139,11 +1136,8 @@ if __name__ == "__main__":
                     early_stop_callback,
                     lr_monitor_callback,
                     config_callback,
-<<<<<<< HEAD
-=======
                     cm_callback,
                     expert_callback
->>>>>>> f2324de (feat: add debugging callbacks)
                 ],
                 accumulate_grad_batches=args.accumulate,
             )
@@ -1259,7 +1253,7 @@ if __name__ == "__main__":
                     early_stop_callback,
                     lr_monitor_callback,
                     cm_callback,
-                    expert_callback
+                    expert_callback,
                 ],
                 accumulate_grad_batches=args.accumulate,
             )
