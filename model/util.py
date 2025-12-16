@@ -786,6 +786,7 @@ class SuperRelationConfusionMatrix(pl.Callback):
     def on_validation_epoch_end(self, trainer, pl_module):
         if not self.preds:
             return
+        import torch
 
         all_preds = torch.cat(self.preds).numpy()
         all_targets = torch.cat(self.targets).numpy()
