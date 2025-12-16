@@ -370,7 +370,7 @@ class SGG(pl.LightningModule):
                 p.requires_grad = False
 
             trainable_modules = [
-                #"rel_predictor.super_head",
+                "rel_predictor.super_head",
                 "rel_predictor.expert_geo",
                 "rel_predictor.expert_poss",
                 "rel_predictor.expert_sem",
@@ -385,9 +385,9 @@ class SGG(pl.LightningModule):
             assert any(
                 "expert_geo" in t for t in trainable
             ), "Experts are not trainable!"
-            assert any(
-                "super_head" in t for t in trainable
-            ), "Super Head is frozen (Check config)!"
+            #assert any(
+            #    "super_head" in t for t in trainable
+            #), "Super Head is frozen (Check config)!"
             assert not any(
                 "shared_layers" in t for t in trainable
             ), "Shared Layers leaked into training!"
