@@ -449,6 +449,17 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
                 triplet_dist = triplet_dist.log()
             self.rel_dist = nn.Parameter(rel_dist, requires_grad=False)
             self.triplet_dist = nn.Parameter(triplet_dist, requires_grad=False)
+
+            if self.config.hierarchical and self.config.logit_adjustment:
+                log_priors = torch.log(
+                    self.rel_dist + 1e-12
+                )  # self.super_relation_map is already loaded via get_super_rel_map()
+                map_tensor = torch.tensor(self.super_relation_map, dtype=torch.long)
+
+                self.register_buffer("prior_geo", log_priors[map_tensor == 0])
+                self.register_buffer("prior_poss", log_priors[map_tensor == 1])
+                self.register_buffer("prior_sem", log_priors[map_tensor == 2])
+
             del rel_dist, triplet_dist
         else:  # when infer
             self.triplet_dist = nn.Parameter(
@@ -818,6 +829,18 @@ class DetrForSceneGraphGeneration(DeformableDetrPreTrainedModel):
             pred_rel = pred_rel - self.config.logit_adj_tau * self.rel_dist.log().to(
                 pred_rel.device
             )
+        if self.config.hierarchical:
+            if self.config.logit_adjustment and not self.training:
+                tau = self.config.logit_adj_tau
+
+                if "geo" in pred_rel:
+                    pred_rel["geo"] = pred_rel["geo"] - tau * self.prior_geo
+
+                if "poss" in pred_rel:
+                    pred_rel["poss"] = pred_rel["poss"] - tau * self.prior_poss
+
+                if "sem" in pred_rel:
+                    pred_rel["sem"] = pred_rel["sem"] - tau * self.prior_sem
 
         pred_connectivity = pred_connectivity.sigmoid()
         if not self.config.hierarchical:
