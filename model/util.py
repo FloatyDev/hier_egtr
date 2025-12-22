@@ -5,6 +5,8 @@ from typing import List, Optional
 import matplotlib as plt
 import ipdb
 from PIL import Image
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from util.box_ops import rescale_bboxes
@@ -847,7 +849,6 @@ class GTTripletVis(pl.Callback):
         for t, (sub_i, obj_i, rel_id) in enumerate(trip_idx, start=1):
             colour = cmap(t)
 
-
             x1, y1, x2, y2 = boxes_xyxy[sub_i]
             ax.add_patch(
                 patches.Rectangle(
@@ -887,7 +888,6 @@ class GTTripletVis(pl.Callback):
                 weight="bold",
             )
 
-
             xm, ym = (x1 + x2 + xo1 + xo2) / 4, (y1 + y2 + yo1 + yo2) / 4
             ax.text(
                 xm,
@@ -923,9 +923,9 @@ class GTTripletVis(pl.Callback):
                 if hasattr(lg, "experiment") and hasattr(lg.experiment, "add_figure"):
                     lg.experiment.add_figure(tag, fig, global_step=step)
 
-
                 if isinstance(lg, pl.loggers.WandbLogger):
                     lg.experiment.log({tag: wandb.Image(fig)}, step=step)
+
         _log_figure(fig, tag="GT_triplets/train", step=global_step, trainer=trainer)
         plt.close(fig)
 
@@ -954,46 +954,45 @@ class SuperRelationConfusionMatrix(pl.Callback):
     def on_validation_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
     ):
-        model_out = outputs["outputs"] 
+        model_out = outputs["outputs"]
         targets = outputs["targets"]
 
         pred_rel = model_out["pred_rel"]
-  
+
         if isinstance(pred_rel, dict):
             pred_logits_50 = pl_module.model.rel_predictor.combine_logits(pred_rel)
         else:
             pred_logits_50 = pred_rel
 
-
         outputs_for_matcher = {
             "logits": model_out["logits"],
-            "pred_boxes": model_out["pred_boxes"]
+            "pred_boxes": model_out["pred_boxes"],
         }
         indices, _ = self.matcher(outputs_for_matcher, targets)
 
         for i, (src_idx, tgt_idx) in enumerate(indices):
 
             rel_logits_matched = pred_logits_50[i][src_idx][:, src_idx]
-            
+
             tgt_rel_matrix = targets[i]["rel"][tgt_idx][:, tgt_idx]
 
-            active_mask = tgt_rel_matrix.sum(dim=-1) > 0 
+            active_mask = tgt_rel_matrix.sum(dim=-1) > 0
             if not active_mask.any():
                 continue
 
-            active_logits = rel_logits_matched[active_mask] # [N_Pairs, 50]
-            active_tgts = tgt_rel_matrix[active_mask]       # [N_Pairs, 50]
+            active_logits = rel_logits_matched[active_mask]  # [N_Pairs, 50]
+            active_tgts = tgt_rel_matrix[active_mask]  # [N_Pairs, 50]
 
-            raw_preds = active_logits.argmax(dim=-1) # [N_Pairs] (Indices 0-49)
-            
+            raw_preds = active_logits.argmax(dim=-1)  # [N_Pairs] (Indices 0-49)
+
             pred_fam = self.orig2fam[raw_preds]
 
-            gt_rel_idx = active_tgts.argmax(dim=-1)         
-            gt_fam = self.orig2fam[gt_rel_idx]              
+            gt_rel_idx = active_tgts.argmax(dim=-1)
+            gt_fam = self.orig2fam[gt_rel_idx]
 
             self.preds.append(pred_fam.cpu())
             self.targets.append(gt_fam.cpu())
-            
+
     def on_validation_epoch_end(self, trainer, pl_module):
         """
         Aggregates results, plots Confusion Matrix, and logs to WandB.
@@ -1006,10 +1005,7 @@ class SuperRelationConfusionMatrix(pl.Callback):
         all_targets = torch.cat(self.targets).numpy()
 
         cm = confusion_matrix(
-            all_targets, 
-            all_preds, 
-            labels=[0, 1, 2], 
-            normalize='true'
+            all_targets, all_preds, labels=[0, 1, 2], normalize="true"
         )
 
         # Plotting
@@ -1024,25 +1020,26 @@ class SuperRelationConfusionMatrix(pl.Callback):
             cbar=False,
             ax=ax,
         )
-        
+
         ax.set_ylabel("True Super-Category (GT)")
         ax.set_xlabel("Predicted Super-Category (Fused Model)")
         ax.set_title(f"Fused Expert Confusion Matrix (Epoch {trainer.current_epoch})")
-        
+
         plt.tight_layout()
 
-
         loggers = trainer.loggers if hasattr(trainer, "loggers") else [trainer.logger]
-        
+
         for logger in loggers:
             if isinstance(logger, pl.loggers.WandbLogger):
                 # Log the image to WandB under a specific key
                 logger.experiment.log(
                     {"val/fused_confusion_matrix": wandb.Image(fig)},
-                    step=trainer.global_step
+                    step=trainer.global_step,
                 )
-            
+
         plt.close(fig)
+
+
 class ExpertDiagnosticsCallback(pl.Callback):
     """
     Diagnoses Expert health by decoupling them from the Router.
@@ -1127,19 +1124,28 @@ class ExpertDiagnosticsCallback(pl.Callback):
                 self.stats[fam_id]["logits"].append(avg_logit)
 
     def on_validation_epoch_end(self, trainer, pl_module):
-    
+
         def get_logit_sum(fam_id):
             logits = self.stats[fam_id]["logits"]
             return sum(logits) if logits else 0.0
 
-        local_stats = torch.tensor([
-            self.router_correct, 
-            self.total_samples,
-            
-            self.stats[0]["correct"], self.stats[0]["total"], get_logit_sum(0),
-            self.stats[1]["correct"], self.stats[1]["total"], get_logit_sum(1),
-            self.stats[2]["correct"], self.stats[2]["total"], get_logit_sum(2),
-        ], device=pl_module.device, dtype=torch.float32)
+        local_stats = torch.tensor(
+            [
+                self.router_correct,
+                self.total_samples,
+                self.stats[0]["correct"],
+                self.stats[0]["total"],
+                get_logit_sum(0),
+                self.stats[1]["correct"],
+                self.stats[1]["total"],
+                get_logit_sum(1),
+                self.stats[2]["correct"],
+                self.stats[2]["total"],
+                get_logit_sum(2),
+            ],
+            device=pl_module.device,
+            dtype=torch.float32,
+        )
 
         if trainer.world_size > 1:
             torch.distributed.all_reduce(local_stats, op=torch.distributed.ReduceOp.SUM)
@@ -1148,7 +1154,7 @@ class ExpertDiagnosticsCallback(pl.Callback):
         if trainer.is_global_zero:
             # Unpack stats
             r_corr, r_tot = local_stats[0].item(), local_stats[1].item()
-            
+
             print("\n" + "=" * 40)
             print(f" EXPERT DIAGNOSTICS (Epoch {trainer.current_epoch})")
             print("=" * 40)
@@ -1159,15 +1165,15 @@ class ExpertDiagnosticsCallback(pl.Callback):
 
             families = ["Geometric", "Possessive", "Semantic"]
             base_idx = 2  # Where expert stats start in the tensor
-            
+
             log_dict = {}
 
             for i, name in enumerate(families):
                 curr = base_idx + (i * 3)
-                
+
                 e_corr = local_stats[curr].item()
-                e_tot = local_stats[curr+1].item()
-                e_logit_sum = local_stats[curr+2].item()
+                e_tot = local_stats[curr + 1].item()
+                e_logit_sum = local_stats[curr + 2].item()
 
                 if e_tot > 0:
                     oracle_acc = e_corr / e_tot
@@ -1175,7 +1181,7 @@ class ExpertDiagnosticsCallback(pl.Callback):
                     print(f" [{name} Expert]")
                     print(f"   - Oracle Acc:   {oracle_acc:.2%} (Capability Ceiling)")
                     print(f"   - Avg Logit:    {avg_logit:.2f}  (Loudness)")
-                    
+
                     log_dict[f"oracle_acc/{name}"] = oracle_acc
                     log_dict[f"avg_logit/{name}"] = avg_logit
                 else:
@@ -1187,3 +1193,224 @@ class ExpertDiagnosticsCallback(pl.Callback):
 
             if trainer.logger and hasattr(trainer.logger.experiment, "log"):
                 trainer.logger.experiment.log(log_dict)
+
+class RouterCalibrationLogger(pl.Callback):
+    """
+    Analyzes the Calibration of the Router (Super-Head).
+    1. Reliability Diagrams: Accuracy vs Confidence per Family.
+    2. Expected Calibration Error (ECE): Global and Per-Family.
+    3. Traitor Analysis: Which fine-grained relations confuse the Router the most?
+    """
+
+    def __init__(self, device="cuda", n_bins=10):
+
+        super().__init__()
+
+        self.n_bins = n_bins
+        self.super_cats = ["Geometric", "Possessive", "Semantic"]
+
+        self.orig2fam_cpu = get_super_rel_map()
+        self.orig2fam = torch.tensor(self.orig2fam_cpu, device=device)
+
+        from model.deformable_detr import DeformableDetrHungarianMatcher
+
+        self.matcher = DeformableDetrHungarianMatcher(
+            class_cost=1.0, bbox_cost=5.0, giou_cost=2.0
+        )
+
+        self.reset_stats()
+
+    def reset_stats(self):
+
+        self.confidences = []
+        self.accuracies = []
+        self.pred_families = []
+        self.gt_families = []
+        self.gt_fine_labels = []
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+
+        self.reset_stats()
+
+        if self.orig2fam.device != pl_module.device:
+            self.orig2fam = self.orig2fam.to(pl_module.device)
+
+    def on_validation_batch_end(
+        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
+    ):
+
+        model_out = outputs["outputs"]
+        targets = outputs["targets"]
+
+        pred_rel = model_out["pred_rel"]
+
+        if not isinstance(pred_rel, dict):
+            return  # Skip if not hierarchical model
+
+        router_logits = pred_rel["super"]  # (B, N, N, 3)
+
+        outputs_for_matcher = {
+            "logits": model_out["logits"],
+            "pred_boxes": model_out["pred_boxes"],
+        }
+
+        indices, _ = self.matcher(outputs_for_matcher, targets)
+
+        for i, (src_idx, tgt_idx) in enumerate(indices):
+            matched_logits = router_logits[i][src_idx][:, src_idx]  # (K, K, 3)
+
+            tgt_rel_matrix = targets[i]["rel"][tgt_idx][
+                :, tgt_idx
+            ]  # (K, K, 50) - One Hot or Sparse
+
+            active_mask = tgt_rel_matrix.sum(dim=-1) > 0  # (K, K)
+
+            if not active_mask.any():
+                continue
+
+            active_logits = matched_logits[active_mask]  # (M, 3)
+            active_gt_rel = tgt_rel_matrix[active_mask]  # (M, 50)
+            gt_fine_idx = active_gt_rel.argmax(dim=-1)  # (M,)
+
+            gt_fam_idx = self.orig2fam[gt_fine_idx]  # (M,)
+
+            probs = torch.softmax(active_logits, dim=-1)  # (M, 3)
+            conf, pred_fam_idx = probs.max(dim=-1)  # (M,), (M,)
+            is_correct = pred_fam_idx == gt_fam_idx
+
+            self.confidences.append(conf.detach().cpu())
+            self.accuracies.append(is_correct.detach().cpu())
+            self.pred_families.append(pred_fam_idx.detach().cpu())
+            self.gt_families.append(gt_fam_idx.detach().cpu())
+            self.gt_fine_labels.append(gt_fine_idx.detach().cpu())
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if not self.confidences:
+            return
+
+        all_confs = torch.cat(self.confidences).numpy()
+        all_accs = torch.cat(self.accuracies).numpy().astype(int)
+        all_pred_fam = torch.cat(self.pred_families).numpy()
+        all_gt_fam = torch.cat(self.gt_families).numpy()
+        all_gt_fine = torch.cat(self.gt_fine_labels).numpy()
+
+        ece_stats = {}
+        fig_reliability, ax = plt.subplots(figsize=(8, 8), dpi=100)
+
+        ax.plot([0, 1], [0, 1], linestyle="--", color="gray", alpha=0.5)
+        colors = ["red", "green", "blue"]  # Geo, Poss, Sem
+
+        for fam_id, fam_name in enumerate(self.super_cats):
+            mask = all_pred_fam == fam_id
+
+            if np.sum(mask) < 10:
+                continue
+
+            fam_confs = all_confs[mask]
+            fam_accs = all_accs[mask]
+            ece, bin_accs, bin_confs = self.compute_ece(fam_confs, fam_accs)
+            ece_stats[f"ECE/{fam_name}"] = ece
+            ece_stats[f"AvgConf/{fam_name}"] = np.mean(fam_confs)
+            ece_stats[f"AvgAcc/{fam_name}"] = np.mean(fam_accs)
+
+            ax.plot(
+                bin_confs,
+                bin_accs,
+                marker="o",
+                label=f"{fam_name} (ECE={ece:.3f})",
+                color=colors[fam_id],
+                linewidth=2,
+            )
+
+        ax.set_xlabel("Confidence (Predicted Probability)")
+        ax.set_ylabel("Actual Accuracy")
+        ax.set_title(f"Router Reliability Diagram (Epoch {trainer.current_epoch})")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        df = pd.DataFrame(
+            {
+                "fine_idx": all_gt_fine,
+                "correct": all_accs,
+                "conf": all_confs,
+                "pred_fam": all_pred_fam,
+                "gt_fam": all_gt_fam,
+            }
+        )
+
+        id2label = (
+            pl_module.id2label if hasattr(pl_module, "id2label") else None
+        )  # Usually object labels...
+
+        grouped = (
+            df.groupby("fine_idx")
+            .agg(
+                count=("correct", "count"),
+                router_acc=("correct", "mean"),
+                avg_conf=("conf", "mean"),
+            )
+            .reset_index()
+        )
+
+        grouped = grouped[grouped["count"] >= 5]
+
+        hardest = grouped.sort_values("router_acc").head(10)
+
+        overconf = (
+            grouped[grouped["router_acc"] < 0.5]
+            .sort_values("avg_conf", ascending=False)
+            .head(10)
+        )
+
+        table_str = "\n--- Router Hardest Relations ---\n"
+        table_str += hardest.to_string(index=False)
+        table_str += "\n\n--- Router Overconfident Blunders ---\n"
+        table_str += overconf.to_string(index=False)
+
+        if trainer.is_global_zero:
+            print(table_str)
+
+        log_dict = ece_stats
+
+        if trainer.logger:
+            if isinstance(trainer.logger, pl.loggers.WandbLogger):
+                trainer.logger.experiment.log(
+                    {
+                        "val/router_reliability": wandb.Image(fig_reliability),
+                        "val/router_metrics": log_dict,
+                    },
+                    step=trainer.global_step,
+                )
+        plt.close(fig_reliability)
+
+    def compute_ece(self, confs, accs):
+        """
+        Computes Expected Calibration Error with equal-width bins.
+        """
+
+        bin_boundaries = np.linspace(0, 1, self.n_bins + 1)
+        bin_lowers = bin_boundaries[:-1]
+        bin_uppers = bin_boundaries[1:]
+
+        ece = 0.0
+
+        bin_accs = []
+        bin_confs = []
+
+        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+
+            in_bin = (confs > bin_lower) & (confs <= bin_upper)
+            prop_in_bin = np.mean(in_bin)
+
+            if prop_in_bin > 0:
+                accuracy_in_bin = np.mean(accs[in_bin])
+                avg_confidence_in_bin = np.mean(confs[in_bin])
+                ece += np.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
+                bin_accs.append(accuracy_in_bin)
+                bin_confs.append(avg_confidence_in_bin)
+            else:
+                pass
+
+        return ece, bin_accs, bin_confs
+
