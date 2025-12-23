@@ -6,7 +6,8 @@ import matplotlib as plt
 import ipdb
 from PIL import Image
 import matplotlib
-matplotlib.use('Agg')
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from util.box_ops import rescale_bboxes
@@ -1194,6 +1195,7 @@ class ExpertDiagnosticsCallback(pl.Callback):
             if trainer.logger and hasattr(trainer.logger.experiment, "log"):
                 trainer.logger.experiment.log(log_dict)
 
+
 class RouterCalibrationLogger(pl.Callback):
     """
     Analyzes the Calibration of the Router (Super-Head).
@@ -1202,7 +1204,7 @@ class RouterCalibrationLogger(pl.Callback):
     3. Traitor Analysis: Which fine-grained relations confuse the Router the most?
     """
 
-    def __init__(self, device="cuda", n_bins=10):
+    def __init__(self, device="cuda", n_bins=10, rel_categories=None):
 
         super().__init__()
 
@@ -1211,6 +1213,7 @@ class RouterCalibrationLogger(pl.Callback):
 
         self.orig2fam_cpu = get_super_rel_map()
         self.orig2fam = torch.tensor(self.orig2fam_cpu, device=device)
+        self.rel_categories = rel_categories
 
         from model.deformable_detr import DeformableDetrHungarianMatcher
 
@@ -1339,10 +1342,6 @@ class RouterCalibrationLogger(pl.Callback):
             }
         )
 
-        id2label = (
-            pl_module.id2label if hasattr(pl_module, "id2label") else None
-        )  # Usually object labels...
-
         grouped = (
             df.groupby("fine_idx")
             .agg(
@@ -1352,7 +1351,13 @@ class RouterCalibrationLogger(pl.Callback):
             )
             .reset_index()
         )
-
+        if self.rel_categories is not None:
+            # Map index to string name
+            grouped["label"] = grouped["fine_idx"].apply(
+                lambda x: self.rel_categories[int(x)] if int(x) < len(self.rel_categories) else str(x)
+            )
+            cols = ["label"] + [c for c in grouped.columns if c != "label"]
+            grouped = grouped[cols]
         grouped = grouped[grouped["count"] >= 5]
 
         hardest = grouped.sort_values("router_acc").head(10)
@@ -1372,10 +1377,11 @@ class RouterCalibrationLogger(pl.Callback):
             print(table_str)
 
         log_dict = ece_stats
+        loggers = trainer.loggers if hasattr(trainer, "loggers") else [trainer.logger]
 
-        if trainer.logger:
-            if isinstance(trainer.logger, pl.loggers.WandbLogger):
-                trainer.logger.experiment.log(
+        for logger in loggers:
+            if isinstance(logger, pl.loggers.WandbLogger):
+                logger.experiment.log(
                     {
                         "val/router_reliability": wandb.Image(fig_reliability),
                         "val/router_metrics": log_dict,
@@ -1383,6 +1389,7 @@ class RouterCalibrationLogger(pl.Callback):
                     step=trainer.global_step,
                 )
         plt.close(fig_reliability)
+
 
     def compute_ece(self, confs, accs):
         """
@@ -1413,4 +1420,3 @@ class RouterCalibrationLogger(pl.Callback):
                 pass
 
         return ece, bin_accs, bin_confs
-
