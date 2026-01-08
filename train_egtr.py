@@ -568,13 +568,6 @@ class SGG(pl.LightningModule):
     def on_validation_epoch_start(self):
         self.validation_step_outputs = []  # Initialize collection list
 
-    def validation_step(self, batch, batch_idx):
-        loss, loss_dict = self.common_step(batch, batch_idx)
-        loss_dict["loss"] = loss
-
-        self.validation_step_outputs.append(loss_dict)
-        return loss_dict
-
     def on_before_optimizer_step(self, optimizer):
         # Compute the 2 norm for each layer
         grad_norms = {}
@@ -625,11 +618,8 @@ class SGG(pl.LightningModule):
             evaluate_batch(
                 outputs,
                 targets,
-                self.multiple_sgg_evaluator,
-                self.multiple_sgg_evaluator_list,
                 self.single_sgg_evaluator,
                 self.single_sgg_evaluator_list,
-                self.oi_evaluator,
                 self.config.num_labels,
                 hierarchical=self.config.hierarchical,
                 partition_data=self.partition_data,
