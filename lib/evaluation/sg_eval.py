@@ -13,7 +13,7 @@ from lib.pytorch_misc import argsort_desc, intersect_2d
 
 np.set_printoptions(precision=3)
 
-MODES = ["sgdet"]
+MODES = ["predcls", "sgcls", "sgdet"]
 
 
 class BasicSceneGraphEvaluator:
@@ -370,3 +370,50 @@ def calculate_mR_from_evaluator_list(evaluator_list, mode, multiple_preds=False)
     print("mR@50: ", mR50)
     print("mR@100: ", mR100)
     return mean_recall
+
+def calculate_f_at_k(recall, mean_recall, ks=(20, 50, 100)):
+    """
+    Calculate F@K as the harmonic mean of R@K and mR@K.
+
+    F@K = 2 * R@K * mR@K / (R@K + mR@K)
+
+    Note:
+        This is not the conventional precision-recall F1 score.
+        It measures the balance between overall Recall@K and
+        class-balanced Mean Recall@K.
+    """
+    f_at_k = {}
+
+    for k in ks:
+        recall_key = f"R@{k}"
+        mean_recall_key = f"mR@{k}"
+
+        if recall_key not in recall:
+            raise KeyError(f"Missing metric: {recall_key}")
+
+        if mean_recall_key not in mean_recall:
+            raise KeyError(f"Missing metric: {mean_recall_key}")
+
+        r = float(recall[recall_key])
+        mr = float(mean_recall[mean_recall_key])
+
+        if not math.isfinite(r):
+            raise ValueError(f"{recall_key} is not finite: {r}")
+
+        if not math.isfinite(mr):
+            raise ValueError(f"{mean_recall_key} is not finite: {mr}")
+
+        denominator = r + mr
+
+        if denominator <= 0.0:
+            value = 0.0
+        else:
+            value = 2.0 * r * mr / denominator
+
+        f_at_k[f"F@{k}"] = float(value)
+
+    print("\n====================== sgdet F@K ======================")
+    for k in ks:
+        print(f"F@{k}: {f_at_k[f'F@{k}']:.6f}")
+
+    return f_at_k

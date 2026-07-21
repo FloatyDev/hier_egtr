@@ -16,11 +16,12 @@ from lib.evaluation.coco_eval import CocoEvaluator
 from lib.evaluation.oi_eval import OIEvaluator
 from lib.evaluation.sg_eval import (
     BasicSceneGraphEvaluator,
+    calculate_f_at_k,
     calculate_mR_from_evaluator_list,
 )
 from model.deformable_detr import DeformableDetrConfig, DeformableDetrFeatureExtractor
 from model.egtr import DetrForSceneGraphGeneration
-from train_egtr import collate_fn, evaluate_batch
+from train_egtr import collate_fn, evaluate_batch, evaluate_batch_all_modes
 
 
 @torch.no_grad()
@@ -42,6 +43,8 @@ def evaluate(
     model,
     dataloader,
     num_labels,
+    matcher,
+    eval_modes,
     single_sgg_evaluator=None,
     oi_evaluator=None,
     coco_evaluator=None,
@@ -79,14 +82,25 @@ def evaluate(
         )
 
         targets = batch["labels"]
-
-        evaluate_batch(
-            outputs,
-            targets,
-            single_sgg_evaluator,
-            single_sgg_evaluator_list,
-            num_labels,
+        evaluate_batch_all_modes(
+            outputs=outputs,
+            targets=targets,
+            matcher=matcher,
+            eval_modes=eval_modes,
+            num_obj_labels=num_labels,
+            single_sgg_evaluator=single_sgg_evaluator,
+            single_sgg_evaluator_list=(
+                single_sgg_evaluator_list
+            ),
+            max_topk=100,
         )
+        #evaluate_batch(
+        #    outputs,
+        #    targets,
+        #    single_sgg_evaluator,
+        #    single_sgg_evaluator_list,
+        #    num_labels,
+        #)
 
         if coco_evaluator is not None:
             orig_target_sizes = torch.stack(
@@ -107,18 +121,55 @@ def evaluate(
         coco_evaluator.summarize()
         metric_dict.update({"AP50": coco_evaluator.coco_eval["bbox"].stats[1]})
 
-    if single_sgg_evaluator_list is not None:
+    if single_sgg_evaluator is not None:
+        for mode in eval_modes:
+            recall = single_sgg_evaluator[
+                mode
+            ].print_stats()
 
-        recall = single_sgg_evaluator["sgdet"].print_stats()
+            mean_recall = calculate_mR_from_evaluator_list(
+                single_sgg_evaluator_list,
+                mode,
+                multiple_preds=False,
+            )
 
-        mean_recall = calculate_mR_from_evaluator_list(
-            single_sgg_evaluator_list, "sgdet", multiple_preds=False
-        )
+            for key, value in recall.items():
+                metric_dict[
+                    f"{mode}/single/{key}"
+                ] = value
 
-        recall = {f"(single){key}": value for key, value in recall.items()}
-        mean_recall = {f"(single){key}": value for key, value in mean_recall.items()}
-        metric_dict.update(recall)
-        metric_dict.update(mean_recall)
+            for key, value in mean_recall.items():
+                metric_dict[
+                    f"{mode}/single/{key}"
+                ] = value
+    #if single_sgg_evaluator is not None:
+    #    recall = single_sgg_evaluator["sgdet"].print_stats()
+
+    #    mean_recall = calculate_mR_from_evaluator_list(
+    #        single_sgg_evaluator_list,
+    #        "sgdet",
+    #        multiple_preds=False,
+    #    )
+
+    #    f_at_k = calculate_f_at_k(
+    #        recall=recall,
+    #        mean_recall=mean_recall,
+    #    )
+
+    #    # Convert all values to native Python floats for safe JSON serialization.
+    #    recall_metrics = {
+    #        f"(single){key}": float(value) for key, value in recall.items()
+    #    }
+    #    mean_recall_metrics = {
+    #        f"(single){key}": float(value) for key, value in mean_recall.items()
+    #    }
+    #    f_at_k_metrics = {
+    #        f"(single){key}": float(value) for key, value in f_at_k.items()
+    #    }
+
+    #    metric_dict.update(recall_metrics)
+    #    metric_dict.update(mean_recall_metrics)
+    #    metric_dict.update(f_at_k_metrics)
 
     if oi_evaluator is not None:
         metrics = oi_evaluator.aggregate_metrics()
@@ -226,6 +277,13 @@ if __name__ == "__main__":
     config.logit_adj_tau = args.logit_adj_tau
     config.hierarchical = args.hier
 
+    matcher = DeformableDetrHungarianMatcher(
+        class_cost=config.ce_loss_coefficient,
+        bbox_cost=config.bbox_cost,
+        giou_cost=config.giou_cost,
+        smoothing=config.smoothing,
+    )
+
     model = DetrForSceneGraphGeneration.from_pretrained(
         args.architecture, config=config, ignore_mismatched_sizes=True
     )
@@ -262,11 +320,20 @@ if __name__ == "__main__":
             model,
             test_dataloader,
             max(id2label.keys()) + 1,
-            singe_sgg_evaluator,
+            single_sgg_evaluator,
             oi_evaluator,
             coco_evaluator,
             feature_extractor,
         )
+        #metric = evaluate(
+        #    model,
+        #    test_dataloader,
+        #    max(id2label.keys()) + 1,
+        #    singe_sgg_evaluator,
+        #    oi_evaluator,
+        #    coco_evaluator,
+        #    feature_extractor,
+        #)
 
         # Save eval metric
         device = "".join(torch.cuda.get_device_name(0).split()[1:2])
@@ -275,7 +342,14 @@ if __name__ == "__main__":
             filename += f"__la_{args.logit_adj_tau}"
 
         metric["eval_arg"] = args.__dict__
+        metric_path = f"{filename}.json"
 
-        with open(f"{filename}.json", "w") as f:
-            json.dump(metric, f)
+        with open(metric_path, "w", encoding="utf-8") as f:
+            json.dump(
+                metric,
+                f,
+                indent=4,
+                allow_nan=False,
+            )
+        print("metric is saved in", metric_path)
         print("metric is saved in", f"{filename}.json")
