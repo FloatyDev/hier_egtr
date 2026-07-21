@@ -38,6 +38,7 @@ from model.deformable_detr import (
     DeformableDetrConfig,
     DeformableDetrFeatureExtractor,
     DeformableDetrFeatureExtractorWithAugmentorNoCrop,
+    DeformableDetrHungarianMatcher,
 )
 from model.egtr import DetrForSceneGraphGeneration
 from util.box_ops import rescale_bboxes
@@ -62,16 +63,32 @@ torch.set_float32_matmul_precision("medium")
 
 def stitch_logits(output_dict, orig2fam_map, device):
     """
-    Reconstructs the full (B, N, N, 50) logit tensor from the hierarchical dict.
+    Reconstruct the full (B, N, N, 50) relation-logit tensor.
+
+    Important:
+    output_dict["geo"], ["poss"], and ["sem"] already contain
+    the corresponding router family logit. Do not add it again.
     """
     logits_super = output_dict["super"]
-    B, N, N_q, _ = logits_super.shape
-    num_fine_classes = 50
-    final_logits = torch.full((B, N, N_q, num_fine_classes), -1000.0, device=device)
+    batch_size, num_queries, _, _ = logits_super.shape
 
-    geo_indices = [i for i, x in enumerate(orig2fam_map) if x == 0]
-    poss_indices = [i for i, x in enumerate(orig2fam_map) if x == 1]
-    sem_indices = [i for i, x in enumerate(orig2fam_map) if x == 2]
+    num_fine_classes = len(orig2fam_map)
+
+    final_logits = torch.full(
+        (
+            batch_size,
+            num_queries,
+            num_queries,
+            num_fine_classes,
+        ),
+        -1000.0,
+        dtype=logits_super.dtype,
+        device=device,
+    )
+
+    geo_indices = [index for index, family in enumerate(orig2fam_map) if family == 0]
+    poss_indices = [index for index, family in enumerate(orig2fam_map) if family == 1]
+    sem_indices = [index for index, family in enumerate(orig2fam_map) if family == 2]
 
     if "geo" in output_dict:
         final_logits[..., geo_indices] = output_dict["geo"]
@@ -85,93 +102,837 @@ def stitch_logits(output_dict, orig2fam_map, device):
     return final_logits
 
 
-# Reference: https://github.com/yuweihao/KERN/blob/master/models/eval_rels.py
-def evaluate_batch(
-    outputs,
-    targets,
-    sgg_evaluator,
-    sgg_evaluator_list,
+def align_predictions_to_ground_truth(
+    pred_rel_probs,
+    pred_connectivity,
+    pred_obj_logits,
+    matching_indices,
+    num_gt_objects,
     num_obj_labels,
+):
+    """
+    Align DETR query predictions to ground-truth object indexing.
+
+    Args:
+        pred_rel_probs:
+            Tensor [N_queries, N_queries, N_rel_classes].
+
+        pred_connectivity:
+            Tensor [N_queries, N_queries, 1] or
+            [N_queries, N_queries].
+
+        pred_obj_logits:
+            Tensor [N_queries, N_obj_classes + 1].
+
+        matching_indices:
+            Tuple (matched_query_indices, matched_target_indices).
+
+        num_gt_objects:
+            Number of GT objects in this image.
+
+        num_obj_labels:
+            Number of foreground object classes.
+
+    Returns:
+        aligned_rel_probs:
+            Tensor [N_gt, N_gt, N_rel_classes].
+
+        aligned_obj_scores:
+            Tensor [N_gt].
+
+        aligned_obj_classes:
+            Tensor [N_gt].
+
+        gt_to_query:
+            Tensor [N_gt], mapping each GT index to a DETR query.
+    """
+    device = pred_rel_probs.device
+    dtype = pred_rel_probs.dtype
+    num_rel_classes = pred_rel_probs.shape[-1]
+
+    query_indices, target_indices = matching_indices
+
+    query_indices = query_indices.to(device=device, dtype=torch.long)
+    target_indices = target_indices.to(device=device, dtype=torch.long)
+
+    gt_to_query = torch.full(
+        (num_gt_objects,),
+        -1,
+        dtype=torch.long,
+        device=device,
+    )
+
+    gt_to_query[target_indices] = query_indices
+
+    aligned_rel_probs = torch.zeros(
+        (
+            num_gt_objects,
+            num_gt_objects,
+            num_rel_classes,
+        ),
+        dtype=dtype,
+        device=device,
+    )
+
+    aligned_obj_scores = torch.zeros(
+        num_gt_objects,
+        dtype=dtype,
+        device=device,
+    )
+
+    aligned_obj_classes = torch.zeros(
+        num_gt_objects,
+        dtype=torch.long,
+        device=device,
+    )
+
+    valid_gt_indices = torch.where(gt_to_query >= 0)[0]
+
+    if valid_gt_indices.numel() == 0:
+        return (
+            aligned_rel_probs,
+            aligned_obj_scores,
+            aligned_obj_classes,
+            gt_to_query,
+        )
+
+    valid_query_indices = gt_to_query[valid_gt_indices]
+
+    # Align object classification predictions.
+    matched_obj_probs = pred_obj_logits[valid_query_indices].softmax(dim=-1)[
+        ..., :num_obj_labels
+    ]
+
+    valid_obj_scores, valid_obj_classes = matched_obj_probs.max(dim=-1)
+
+    aligned_obj_scores[valid_gt_indices] = valid_obj_scores
+    aligned_obj_classes[valid_gt_indices] = valid_obj_classes
+
+    # Align relation predictions through indexed extraction.
+    subject_queries = valid_query_indices[:, None].expand(
+        -1,
+        valid_query_indices.numel(),
+    )
+    object_queries = valid_query_indices[None, :].expand(
+        valid_query_indices.numel(),
+        -1,
+    )
+
+    aligned_valid_rel_probs = pred_rel_probs[
+        subject_queries,
+        object_queries,
+    ]
+
+    # Apply the model's learned connectivity gate.
+    if pred_connectivity is not None:
+        connectivity = pred_connectivity
+
+        if connectivity.dim() == 3 and connectivity.shape[-1] == 1:
+            connectivity = connectivity.squeeze(-1)
+
+        aligned_connectivity = connectivity[
+            subject_queries,
+            object_queries,
+        ]
+
+        aligned_valid_rel_probs = (
+            aligned_valid_rel_probs * aligned_connectivity.unsqueeze(-1)
+        )
+
+    aligned_rel_probs[
+        valid_gt_indices[:, None],
+        valid_gt_indices[None, :],
+    ] = aligned_valid_rel_probs
+
+    # Never evaluate self-relations.
+    diagonal = torch.arange(num_gt_objects, device=device)
+    aligned_rel_probs[diagonal, diagonal] = 0.0
+
+    return (
+        aligned_rel_probs,
+        aligned_obj_scores,
+        aligned_obj_classes,
+        gt_to_query,
+    )
+
+
+def select_top_relation_pairs(
+    relation_probs,
+    object_scores=None,
     max_topk=100,
 ):
-    orig2fam = get_super_rel_map()
+    """
+    Rank ordered subject-object pairs.
+
+    Args:
+        relation_probs:
+            Tensor [N, N, num_rel_classes].
+
+        object_scores:
+            Optional tensor [N]. When supplied, pair scores include
+            subject and object classification confidence.
+
+        max_topk:
+            Maximum number of ordered pairs returned.
+
+    Returns:
+        pred_rel_inds:
+            NumPy array [K, 2].
+
+        rel_scores:
+            NumPy array [K, num_rel_classes].
+    """
+    num_objects = relation_probs.shape[0]
+
+    if num_objects <= 1:
+        return (
+            np.zeros((0, 2), dtype=np.int64),
+            np.zeros(
+                (0, relation_probs.shape[-1]),
+                dtype=np.float32,
+            ),
+        )
+
+    relation_max_scores = relation_probs.max(dim=-1).values
+
+    if object_scores is not None:
+        pair_object_scores = torch.outer(
+            object_scores,
+            object_scores,
+        )
+        triplet_scores = pair_object_scores * relation_max_scores
+    else:
+        triplet_scores = relation_max_scores
+
+    diagonal = torch.arange(
+        num_objects,
+        device=triplet_scores.device,
+    )
+    triplet_scores[diagonal, diagonal] = 0.0
+
+    pred_rel_inds = argsort_desc(triplet_scores.detach().cpu().numpy())[:max_topk, :]
+
+    rel_scores = relation_probs[
+        pred_rel_inds[:, 0],
+        pred_rel_inds[:, 1],
+    ]
+
+    return (
+        pred_rel_inds,
+        rel_scores.detach().cpu().numpy(),
+    )
+
+
+def evaluate_entry(
+    mode,
+    gt_entry,
+    pred_entry,
+    single_sgg_evaluator,
+    single_sgg_evaluator_list,
+):
+    single_sgg_evaluator[mode].evaluate_scene_graph_entry(
+        gt_entry,
+        pred_entry,
+    )
+
+    for pred_id, _, evaluator_rel in single_sgg_evaluator_list:
+        predicate_mask = np.in1d(
+            gt_entry["gt_relations"][:, -1],
+            pred_id,
+        )
+
+        filtered_relations = gt_entry["gt_relations"][predicate_mask]
+
+        if filtered_relations.shape[0] == 0:
+            continue
+
+        gt_entry_rel = {
+            "gt_relations": filtered_relations,
+            "gt_boxes": gt_entry["gt_boxes"],
+            "gt_classes": gt_entry["gt_classes"],
+        }
+
+        evaluator_rel[mode].evaluate_scene_graph_entry(
+            gt_entry_rel,
+            pred_entry,
+        )
+
+
+def evaluate_batch_all_modes(
+    outputs,
+    targets,
+    matcher,
+    eval_modes,
+    num_obj_labels,
+    single_sgg_evaluator,
+    single_sgg_evaluator_list,
+    max_topk=100,
+):
+    """
+    Evaluate a model batch under SGDet, SGCls, and PredCls.
+    """
+    valid_modes = {"sgdet", "sgcls", "predcls"}
+
+    for mode in eval_modes:
+        if mode not in valid_modes:
+            raise ValueError(f"Unsupported evaluation mode: {mode}")
+
     pred_rel_raw = outputs["pred_rel"]
 
+    # Hierarchical output is a dictionary of expert tensors.
     if isinstance(pred_rel_raw, dict):
-        # We are in Hierarchical Mode: Stitch to get (B, N, N, 50)
+        from model.util import get_super_rel_map
+
         pred_rel_logits = stitch_logits(
-            pred_rel_raw, orig2fam, outputs["logits"].device
+            pred_rel_raw,
+            get_super_rel_map(),
+            outputs["logits"].device,
         )
     else:
         pred_rel_logits = pred_rel_raw
 
-    for j, target in enumerate(targets):
-        pred_obj_logits = outputs["logits"][j]
-        pred_boxes = outputs["pred_boxes"][j]
+    # The matcher only needs object logits and predicted boxes.
+    matcher_outputs = {
+        "logits": outputs["logits"],
+        "pred_boxes": outputs["pred_boxes"],
+    }
 
-        pred_rel_probs = pred_rel_logits[j].softmax(-1)
+    # Targets must be on the same device as matcher outputs.
+    matcher_targets = []
+
+    for target in targets:
+        matcher_target = {}
+
+        for key, value in target.items():
+            if torch.is_tensor(value):
+                matcher_target[key] = value.to(outputs["logits"].device)
+            else:
+                matcher_target[key] = value
+
+        matcher_targets.append(matcher_target)
+
+    match_indices = matcher(
+        matcher_outputs,
+        matcher_targets,
+    )
+
+    for batch_index, target in enumerate(targets):
+        gt_entry = build_gt_entry(target)
+
+        if gt_entry["gt_relations"].shape[0] == 0:
+            continue
 
         orig_size = target["orig_size"].cpu()
+        num_gt_objects = len(gt_entry["gt_classes"])
 
-        obj_scores, pred_classes = torch.max(
-            pred_obj_logits.softmax(-1)[:, :num_obj_labels], -1
-        )
+        pred_obj_logits = outputs["logits"][batch_index]
+        pred_boxes_normalized = outputs["pred_boxes"][batch_index]
 
-        sub_ob_scores = torch.outer(obj_scores, obj_scores)
-        sub_ob_scores.fill_diagonal_(0.0)
+        # Hierarchical predictions are logits.
+        # Flat EGTR already returns activated predicate scores.
+        if isinstance(pred_rel_raw, dict):
+            pred_rel_probs = pred_rel_logits[batch_index].softmax(dim=-1)
+        else:
+            pred_rel_probs = pred_rel_logits[batch_index]
 
-        if "pred_connectivity" in outputs:
-            pred_connectivity = torch.clamp(outputs["pred_connectivity"][j], 0.0, 1.0)
-            pred_rel_probs = pred_rel_probs * pred_connectivity
+        pred_connectivity = None
 
-        rel_max_scores, _ = pred_rel_probs.max(dim=-1)
-        triplet_scores = sub_ob_scores * rel_max_scores
-
-        pred_rel_inds = argsort_desc(triplet_scores.cpu().clone().numpy())[:max_topk, :]
-
-        rel_scores = (
-            pred_rel_probs.cpu()
-            .clone()
-            .numpy()[pred_rel_inds[:, 0], pred_rel_inds[:, 1]]
-        )
-
-        pred_entry = {
-            "pred_boxes": rescale_bboxes(
-                pred_boxes.cpu(), torch.flip(orig_size, dims=[0])
+        if outputs.get("pred_connectivity") is not None:
+            pred_connectivity = torch.clamp(
+                outputs["pred_connectivity"][batch_index],
+                min=0.0,
+                max=1.0,
             )
-            .clone()
-            .numpy(),
-            "pred_classes": pred_classes.cpu().clone().numpy(),
-            "obj_scores": obj_scores.cpu().clone().numpy(),
-            "pred_rel_inds": pred_rel_inds,
-            "rel_scores": rel_scores,
-        }
 
+        (
+            aligned_rel_probs,
+            aligned_obj_scores,
+            aligned_obj_classes,
+            gt_to_query,
+        ) = align_queries_to_gt(
+            pred_rel_probs=pred_rel_probs,
+            pred_connectivity=pred_connectivity,
+            pred_obj_logits=pred_obj_logits,
+            match_indices=match_indices[batch_index],
+            num_gt_objects=num_gt_objects,
+            num_obj_labels=num_obj_labels,
+        )
+
+        num_unmatched = int((gt_to_query < 0).sum().item())
+
+        if num_unmatched > 0:
+            print(
+                "[evaluation] Warning: "
+                f"{num_unmatched}/{num_gt_objects} "
+                "GT objects were not matched."
+            )
+
+        for mode in eval_modes:
+            if mode == "sgdet":
+                pred_obj_probs = pred_obj_logits.softmax(dim=-1)[..., :num_obj_labels]
+
+                obj_scores, pred_classes = pred_obj_probs.max(dim=-1)
+
+                sgdet_rel_probs = pred_rel_probs
+
+                if pred_connectivity is not None:
+                    connectivity = pred_connectivity
+
+                    if connectivity.dim() == 3 and connectivity.shape[-1] == 1:
+                        connectivity = connectivity.squeeze(-1)
+
+                    sgdet_rel_probs = sgdet_rel_probs * connectivity.unsqueeze(-1)
+
+                pred_rel_inds, rel_scores = select_top_pairs(
+                    rel_probs=sgdet_rel_probs,
+                    obj_scores=obj_scores,
+                    max_topk=max_topk,
+                )
+
+                pred_boxes = (
+                    rescale_bboxes(
+                        pred_boxes_normalized.cpu(),
+                        torch.flip(orig_size, dims=[0]),
+                    )
+                    .clone()
+                    .numpy()
+                )
+
+                pred_entry = {
+                    "pred_boxes": pred_boxes,
+                    "pred_classes": (pred_classes.detach().cpu().numpy()),
+                    "obj_scores": (obj_scores.detach().cpu().numpy()),
+                    "pred_rel_inds": pred_rel_inds,
+                    "rel_scores": rel_scores,
+                }
+
+            elif mode == "sgcls":
+                pred_rel_inds, rel_scores = select_top_pairs(
+                    rel_probs=aligned_rel_probs,
+                    obj_scores=aligned_obj_scores,
+                    max_topk=max_topk,
+                )
+
+                pred_entry = {
+                    # Evaluator uses GT boxes in SGCls.
+                    "pred_boxes": gt_entry["gt_boxes"],
+                    "pred_classes": (aligned_obj_classes.detach().cpu().numpy()),
+                    "obj_scores": (aligned_obj_scores.detach().cpu().numpy()),
+                    "pred_rel_inds": pred_rel_inds,
+                    "rel_scores": rel_scores,
+                }
+
+            elif mode == "predcls":
+                pred_rel_inds, rel_scores = select_top_pairs(
+                    rel_probs=aligned_rel_probs,
+                    obj_scores=None,
+                    max_topk=max_topk,
+                )
+
+                pred_entry = {
+                    # Evaluator uses GT boxes and GT classes.
+                    "pred_boxes": gt_entry["gt_boxes"],
+                    "pred_classes": gt_entry["gt_classes"],
+                    "obj_scores": np.ones(
+                        num_gt_objects,
+                        dtype=np.float32,
+                    ),
+                    "pred_rel_inds": pred_rel_inds,
+                    "rel_scores": rel_scores,
+                }
+
+            else:
+                raise RuntimeError(f"Unhandled evaluation mode: {mode}")
+
+            if mode in {"sgcls", "predcls"}:
+                if pred_rel_inds.size > 0:
+                    assert pred_rel_inds.max() < num_gt_objects, (
+                        f"{mode} relation indices are not " "GT-object indices."
+                    )
+
+            assert (
+                pred_entry["pred_rel_inds"].shape[0]
+                == pred_entry["rel_scores"].shape[0]
+            )
+
+            evaluate_entry(
+                mode=mode,
+                gt_entry=gt_entry,
+                pred_entry=pred_entry,
+                single_sgg_evaluator=single_sgg_evaluator,
+                single_sgg_evaluator_list=(single_sgg_evaluator_list),
+            )
+
+
+def evaluate_batch(
+    outputs,
+    targets,
+    matching_indices,
+    eval_modes,
+    multiple_sgg_evaluator=None,
+    multiple_sgg_evaluator_list=None,
+    single_sgg_evaluator=None,
+    single_sgg_evaluator_list=None,
+    oi_evaluator=None,
+    num_obj_labels=None,
+    max_topk=100,
+    **_,
+):
+    """
+    Evaluate one batch under SGDet, SGCls, and/or PredCls.
+
+    Protocols:
+        SGDet:
+            Predicted boxes, object classes, and predicates.
+
+        SGCls:
+            GT boxes, predicted object classes, predicted predicates.
+
+        PredCls:
+            GT boxes, GT object classes, predicted predicates.
+    """
+    if num_obj_labels is None:
+        num_obj_labels = outputs["logits"].shape[-1] - 1
+
+    valid_modes = {"sgdet", "sgcls", "predcls"}
+
+    for mode in eval_modes:
+        if mode not in valid_modes:
+            raise ValueError(
+                f"Invalid evaluation mode: {mode}. "
+                f"Expected one of {sorted(valid_modes)}."
+            )
+
+    orig2fam = get_super_rel_map()
+    pred_rel_raw = outputs["pred_rel"]
+
+    if isinstance(pred_rel_raw, dict):
+        pred_rel_logits = stitch_logits(
+            pred_rel_raw,
+            orig2fam,
+            outputs["logits"].device,
+        )
+    else:
+        pred_rel_logits = pred_rel_raw
+
+    for batch_index, target in enumerate(targets):
+        pred_obj_logits = outputs["logits"][batch_index]
+        pred_boxes_normalized = outputs["pred_boxes"][batch_index]
+
+        # Hierarchical heads produce logits, so use softmax.
+        # For flat EGTR, preserve the existing tensor behavior.
+        if isinstance(pred_rel_raw, dict):
+            pred_rel_probs = pred_rel_logits[batch_index].softmax(dim=-1)
+        else:
+            pred_rel_probs = pred_rel_logits[batch_index]
+
+        pred_connectivity = None
+        if "pred_connectivity" in outputs:
+            pred_connectivity = torch.clamp(
+                outputs["pred_connectivity"][batch_index],
+                min=0.0,
+                max=1.0,
+            )
+
+        orig_size = target["orig_size"].cpu()
         target_labels = target["class_labels"].cpu()
         target_boxes = target["boxes"].cpu()
         target_rel = target["rel"].cpu().nonzero()
 
+        gt_boxes = (
+            rescale_bboxes(
+                target_boxes,
+                torch.flip(orig_size, dims=[0]),
+            )
+            .clone()
+            .numpy()
+        )
+
+        gt_classes = target_labels.clone().numpy()
+
         gt_entry = {
             "gt_relations": target_rel.clone().numpy(),
-            "gt_boxes": rescale_bboxes(target_boxes, torch.flip(orig_size, dims=[0]))
-            .clone()
-            .numpy(),
-            "gt_classes": target_labels.clone().numpy(),
+            "gt_boxes": gt_boxes,
+            "gt_classes": gt_classes,
         }
 
-        if sgg_evaluator is not None:
-            sgg_evaluator["sgdet"].evaluate_scene_graph_entry(gt_entry, pred_entry)
+        # Some images may contain no annotated relations.
+        if gt_entry["gt_relations"].shape[0] == 0:
+            continue
 
-        if sgg_evaluator_list is not None:
-            for pred_id, _, evaluator_rel in sgg_evaluator_list:
-                gt_entry_rel = gt_entry.copy()
-                mask = np.in1d(gt_entry_rel["gt_relations"][:, -1], pred_id)
-                gt_entry_rel["gt_relations"] = gt_entry_rel["gt_relations"][mask, :]
-                if gt_entry_rel["gt_relations"].shape[0] == 0:
-                    continue
-                evaluator_rel["sgdet"].evaluate_scene_graph_entry(
-                    gt_entry_rel, pred_entry
+        num_gt_objects = len(gt_classes)
+
+        # Build GT-aligned query predictions once per image.
+        (
+            aligned_rel_probs,
+            aligned_obj_scores,
+            aligned_obj_classes,
+            gt_to_query,
+        ) = align_predictions_to_ground_truth(
+            pred_rel_probs=pred_rel_probs,
+            pred_connectivity=pred_connectivity,
+            pred_obj_logits=pred_obj_logits,
+            matching_indices=matching_indices[batch_index],
+            num_gt_objects=num_gt_objects,
+            num_obj_labels=num_obj_labels,
+        )
+
+        num_unmatched = int((gt_to_query < 0).sum().item())
+
+        if num_unmatched > 0:
+            print(
+                f"[evaluation] Warning: image has "
+                f"{num_unmatched}/{num_gt_objects} unmatched GT objects."
+            )
+
+        for mode in eval_modes:
+            if mode == "sgdet":
+                pred_obj_probs = pred_obj_logits.softmax(dim=-1)[..., :num_obj_labels]
+
+                obj_scores, pred_classes = pred_obj_probs.max(dim=-1)
+
+                sgdet_rel_probs = pred_rel_probs
+
+                if pred_connectivity is not None:
+                    connectivity = pred_connectivity
+
+                    if connectivity.dim() == 3 and connectivity.shape[-1] == 1:
+                        connectivity = connectivity.squeeze(-1)
+
+                    sgdet_rel_probs = sgdet_rel_probs * connectivity.unsqueeze(-1)
+
+                pred_rel_inds, rel_scores = select_top_relation_pairs(
+                    relation_probs=sgdet_rel_probs,
+                    object_scores=obj_scores,
+                    max_topk=max_topk,
                 )
+
+                pred_boxes = (
+                    rescale_bboxes(
+                        pred_boxes_normalized.cpu(),
+                        torch.flip(orig_size, dims=[0]),
+                    )
+                    .clone()
+                    .numpy()
+                )
+
+                pred_entry = {
+                    "pred_boxes": pred_boxes,
+                    "pred_classes": (pred_classes.detach().cpu().numpy()),
+                    "obj_scores": (obj_scores.detach().cpu().numpy()),
+                    "pred_rel_inds": pred_rel_inds,
+                    "rel_scores": rel_scores,
+                }
+
+            elif mode == "sgcls":
+                pred_rel_inds, rel_scores = select_top_relation_pairs(
+                    relation_probs=aligned_rel_probs,
+                    object_scores=aligned_obj_scores,
+                    max_topk=max_topk,
+                )
+
+                pred_entry = {
+                    # The evaluator replaces these with GT boxes.
+                    "pred_boxes": gt_boxes,
+                    "pred_classes": (aligned_obj_classes.detach().cpu().numpy()),
+                    "obj_scores": (aligned_obj_scores.detach().cpu().numpy()),
+                    "pred_rel_inds": pred_rel_inds,
+                    "rel_scores": rel_scores,
+                }
+
+            elif mode == "predcls":
+                # In PredCls, object categories are known and should
+                # not influence pair ranking through confidence.
+                pred_rel_inds, rel_scores = select_top_relation_pairs(
+                    relation_probs=aligned_rel_probs,
+                    object_scores=None,
+                    max_topk=max_topk,
+                )
+
+                pred_entry = {
+                    "pred_boxes": gt_boxes,
+                    "pred_classes": gt_classes,
+                    "obj_scores": np.ones(
+                        num_gt_objects,
+                        dtype=np.float32,
+                    ),
+                    "pred_rel_inds": pred_rel_inds,
+                    "rel_scores": rel_scores,
+                }
+
+            else:
+                raise RuntimeError(f"Unhandled evaluation mode: {mode}")
+
+            # Overall unconstrained/multiple-predicate evaluator.
+            if multiple_sgg_evaluator is not None:
+                multiple_sgg_evaluator[mode].evaluate_scene_graph_entry(
+                    gt_entry,
+                    pred_entry,
+                )
+
+            # Per-predicate unconstrained evaluator.
+            if multiple_sgg_evaluator_list is not None:
+                for (
+                    pred_id,
+                    _,
+                    evaluator_rel,
+                ) in multiple_sgg_evaluator_list:
+                    gt_entry_rel = {
+                        "gt_relations": gt_entry["gt_relations"].copy(),
+                        "gt_boxes": gt_entry["gt_boxes"],
+                        "gt_classes": gt_entry["gt_classes"],
+                    }
+
+                    mask = np.in1d(
+                        gt_entry_rel["gt_relations"][:, -1],
+                        pred_id,
+                    )
+
+                    gt_entry_rel["gt_relations"] = gt_entry_rel["gt_relations"][mask]
+
+                    if gt_entry_rel["gt_relations"].shape[0] == 0:
+                        continue
+
+                    evaluator_rel[mode].evaluate_scene_graph_entry(
+                        gt_entry_rel,
+                        pred_entry,
+                    )
+
+            # Overall graph-constrained evaluator.
+            if single_sgg_evaluator is not None:
+                single_sgg_evaluator[mode].evaluate_scene_graph_entry(
+                    gt_entry,
+                    pred_entry,
+                )
+
+            # Per-predicate graph-constrained evaluator.
+            if single_sgg_evaluator_list is not None:
+                for (
+                    pred_id,
+                    _,
+                    evaluator_rel,
+                ) in single_sgg_evaluator_list:
+                    gt_entry_rel = {
+                        "gt_relations": gt_entry["gt_relations"].copy(),
+                        "gt_boxes": gt_entry["gt_boxes"],
+                        "gt_classes": gt_entry["gt_classes"],
+                    }
+
+                    mask = np.in1d(
+                        gt_entry_rel["gt_relations"][:, -1],
+                        pred_id,
+                    )
+
+                    gt_entry_rel["gt_relations"] = gt_entry_rel["gt_relations"][mask]
+
+                    if gt_entry_rel["gt_relations"].shape[0] == 0:
+                        continue
+
+                    evaluator_rel[mode].evaluate_scene_graph_entry(
+                        gt_entry_rel,
+                        pred_entry,
+                    )
+
+            # Open Images evaluation remains SGDet-only.
+            if oi_evaluator is not None and mode == "sgdet":
+                oi_scores = rel_scores.max(axis=1)
+
+                pred_entry_oi = {
+                    **pred_entry,
+                    "sbj_obj_inds": pred_rel_inds,
+                    "pred_scores": oi_scores,
+                }
+
+                oi_evaluator(gt_entry, pred_entry_oi)
+
+
+## Reference: https://github.com/yuweihao/KERN/blob/master/models/eval_rels.py
+# def evaluate_batch(
+#    outputs,
+#    targets,
+#    sgg_evaluator,
+#    sgg_evaluator_list,
+#    num_obj_labels,
+#    max_topk=100,
+# ):
+#    orig2fam = get_super_rel_map()
+#    pred_rel_raw = outputs["pred_rel"]
+#
+#    if isinstance(pred_rel_raw, dict):
+#        # We are in Hierarchical Mode: Stitch to get (B, N, N, 50)
+#        pred_rel_logits = stitch_logits(
+#            pred_rel_raw, orig2fam, outputs["logits"].device
+#        )
+#    else:
+#        pred_rel_logits = pred_rel_raw
+#
+#    for j, target in enumerate(targets):
+#        pred_obj_logits = outputs["logits"][j]
+#        pred_boxes = outputs["pred_boxes"][j]
+#
+#        pred_rel_probs = pred_rel_logits[j].softmax(-1)
+#
+#        orig_size = target["orig_size"].cpu()
+#
+#        obj_scores, pred_classes = torch.max(
+#            pred_obj_logits.softmax(-1)[:, :num_obj_labels], -1
+#        )
+#
+#        sub_ob_scores = torch.outer(obj_scores, obj_scores)
+#        sub_ob_scores.fill_diagonal_(0.0)
+#
+#        if "pred_connectivity" in outputs:
+#            pred_connectivity = torch.clamp(outputs["pred_connectivity"][j], 0.0, 1.0)
+#            pred_rel_probs = pred_rel_probs * pred_connectivity
+#
+#        rel_max_scores, _ = pred_rel_probs.max(dim=-1)
+#        triplet_scores = sub_ob_scores * rel_max_scores
+#
+#        pred_rel_inds = argsort_desc(triplet_scores.cpu().clone().numpy())[:max_topk, :]
+#
+#        rel_scores = (
+#            pred_rel_probs.cpu()
+#            .clone()
+#            .numpy()[pred_rel_inds[:, 0], pred_rel_inds[:, 1]]
+#        )
+#
+#        pred_entry = {
+#            "pred_boxes": rescale_bboxes(
+#                pred_boxes.cpu(), torch.flip(orig_size, dims=[0])
+#            )
+#            .clone()
+#            .numpy(),
+#            "pred_classes": pred_classes.cpu().clone().numpy(),
+#            "obj_scores": obj_scores.cpu().clone().numpy(),
+#            "pred_rel_inds": pred_rel_inds,
+#            "rel_scores": rel_scores,
+#        }
+#
+#        target_labels = target["class_labels"].cpu()
+#        target_boxes = target["boxes"].cpu()
+#        target_rel = target["rel"].cpu().nonzero()
+#
+#        gt_entry = {
+#            "gt_relations": target_rel.clone().numpy(),
+#            "gt_boxes": rescale_bboxes(target_boxes, torch.flip(orig_size, dims=[0]))
+#            .clone()
+#            .numpy(),
+#            "gt_classes": target_labels.clone().numpy(),
+#        }
+#
+#        if sgg_evaluator is not None:
+#            sgg_evaluator["sgdet"].evaluate_scene_graph_entry(gt_entry, pred_entry)
+#
+#        if sgg_evaluator_list is not None:
+#            for pred_id, _, evaluator_rel in sgg_evaluator_list:
+#                gt_entry_rel = gt_entry.copy()
+#                mask = np.in1d(gt_entry_rel["gt_relations"][:, -1], pred_id)
+#                gt_entry_rel["gt_relations"] = gt_entry_rel["gt_relations"][mask, :]
+#                if gt_entry_rel["gt_relations"].shape[0] == 0:
+#                    continue
+#                evaluator_rel["sgdet"].evaluate_scene_graph_entry(
+#                    gt_entry_rel, pred_entry
+#                )
 
 
 def collate_fn(batch, feature_extractor):
@@ -755,6 +1516,16 @@ def build_parser(parser):
     parser.add_argument("--eval_when_train_end", type=str2bool, default=True)
     parser.add_argument("--eval_single_preds", type=str2bool, default=True)
     parser.add_argument("--eval_multiple_preds", type=str2bool, default=False)
+    parser.add_argument(
+        "--eval_modes",
+        nargs="+",
+        default=["sgdet"],
+        choices=["sgdet", "sgcls", "predcls"],
+        help=(
+            "Scene graph protocols to evaluate. "
+            "Example: --eval_modes sgdet sgcls predcls"
+        ),
+    )
     parser.add_argument("--logit_adjustment", type=str2bool, default=False)
     parser.add_argument("--logit_adj_tau", type=float, default=0.3)
 
@@ -838,6 +1609,8 @@ if __name__ == "__main__":
         cats = train_dataset.coco.cats
         id2label = {k - 1: v["name"] for k, v in cats.items()}  # 0 ~ 149
         fg_matrix = vg_get_statistics(train_dataset, must_overlap=True)
+        print(id2label)
+        assert 0
     else:
         train_dataset = OIDataset(
             data_folder=args.data_path,
